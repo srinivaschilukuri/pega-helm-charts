@@ -1,0 +1,43 @@
+{{- $mcp := .Values.infinityRulesMcp }}
+{{- if and .Values.enabled $mcp.enabled $mcp.auth.enabled $mcp.ingress.enabled }}
+{{- $depName := "infinity-rules-mcp-service" }}
+{{- $host := include "infinityRulesMcp.publicHost" . }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $depName }}
+  labels:
+    app: {{ $depName }}
+  {{- with $mcp.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $mcp.ingress.ingressClassName }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+  - host: {{ $host }}
+    http:
+      paths:
+      - path: /mcp
+        pathType: Exact
+        backend:
+          service:
+            name: {{ $depName }}
+            port:
+              number: {{ $mcp.service.port }}
+      - path: /.well-known/oauth-protected-resource
+        pathType: Prefix
+        backend:
+          service:
+            name: {{ $depName }}
+            port:
+              number: {{ $mcp.service.port }}
+  {{- with $mcp.ingress.tls.secretName }}
+  tls:
+  - hosts:
+    - {{ $host }}
+    secretName: {{ . }}
+  {{- end }}
+{{ end }}

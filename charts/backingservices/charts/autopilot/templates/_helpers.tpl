@@ -160,3 +160,252 @@ Usage: {{ include "autopilot.creatorEnvSuffix" "openrouter" }}
 {{- define "autopilot.creatorEnvSuffix" -}}
 {{- . | upper | replace "-" "_" | replace "." "_" -}}
 {{- end -}}
+
+{{/*
+Infinity Rules MCP: host name of infinityRulesMcp.auth.publicUrl, used for the Ingress rule and TLS host.
+*/}}
+{{- define "infinityRulesMcp.publicHost" -}}
+{{- (urlParse (toString .Values.infinityRulesMcp.auth.publicUrl)).hostname | lower -}}
+{{- end -}}
+
+{{/*
+Infinity Rules MCP: JVM options for the trust store, rendered into JDK_JAVA_OPTIONS. Empty when no trust store is set.
+$(MCP_TRUSTSTORE_PASSWORD) is expanded by Kubernetes from the variable declared before JDK_JAVA_OPTIONS.
+*/}}
+{{- define "infinityRulesMcp.jdkJavaOptions" -}}
+{{- $trustStore := .Values.infinityRulesMcp.trustStore -}}
+{{- if $trustStore.secretName -}}
+{{- $options := list (printf "-Djavax.net.ssl.trustStore=/opt/mcp/truststore/%s" $trustStore.key) (printf "-Djavax.net.ssl.trustStoreType=%s" $trustStore.type) -}}
+{{- if $trustStore.passwordKey -}}
+{{- $options = append $options "-Djavax.net.ssl.trustStorePassword=$(MCP_TRUSTSTORE_PASSWORD)" -}}
+{{- end -}}
+{{- join " " $options -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Infinity Rules MCP: environment variables added in bearer mode (infinityRulesMcp.auth.enabled), after the
+variables shared with trusted-header mode. Only the active token mode's variables are rendered.
+*/}}
+{{- define "infinityRulesMcp.bearerEnv" -}}
+{{- $mcp := .Values.infinityRulesMcp -}}
+{{- $auth := $mcp.auth -}}
+- name: PEGA_INBOUND_AUTH
+  value: "bearer"
+- name: PEGA_TOKEN_MODE
+  value: {{ $auth.tokenMode | quote }}
+- name: MCP_PUBLIC_URL
+  value: {{ trimSuffix "/" (toString $auth.publicUrl) | quote }}
+- name: PEGA_ALLOWED_HOSTS
+  value: {{ join "," $mcp.allowedHosts | quote }}
+{{- with $mcp.infinityVersion }}
+- name: PEGA_INFINITY_VERSION
+  value: {{ toString . | quote }}
+{{- end }}
+- name: SERVER_MAX_HTTP_REQUEST_HEADER_SIZE
+  value: "16KB"
+- name: PEGA_KNOWLEDGE_ENABLED
+  value: {{ eq (toString $mcp.knowledge.enabled) "true" | toString | quote }}
+{{- if eq $auth.tokenMode "exchange" }}
+{{- $exchange := $auth.exchange }}
+- name: PEGA_EXCHANGE_ISSUER
+  value: {{ $exchange.issuer | quote }}
+{{- with $exchange.jwksUri }}
+- name: PEGA_EXCHANGE_JWKS_URI
+  value: {{ . | quote }}
+- name: PEGA_EXCHANGE_DISCOVERY
+  value: "false"
+{{- end }}
+{{- with $exchange.audience }}
+- name: PEGA_EXCHANGE_AUDIENCE
+  value: {{ . | quote }}
+{{- end }}
+- name: PEGA_EXCHANGE_ALGS
+  value: {{ join "," $exchange.algorithms | quote }}
+- name: PEGA_EXCHANGE_CLIENT_ID
+  value: {{ toString $exchange.clientId | quote }}
+- name: PEGA_EXCHANGE_CLIENT_AUTH_METHOD
+  value: {{ $exchange.clientAuthMethod | quote }}
+{{- with $exchange.clientSecret.name }}
+- name: PEGA_EXCHANGE_CLIENT_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ . | quote }}
+      key: {{ $exchange.clientSecret.key | quote }}
+{{- end }}
+{{- with $exchange.internalAudiences }}
+- name: PEGA_EXCHANGE_INTERNAL_AUDIENCES
+  value: {{ join "," . | quote }}
+{{- end }}
+{{- else }}
+{{- with $auth.passthrough.audiences }}
+- name: PEGA_TOKEN_AUDIENCES
+  value: {{ join "," . | quote }}
+{{- end }}
+{{- end }}
+{{- if and $mcp.trustStore.secretName $mcp.trustStore.passwordKey }}
+- name: MCP_TRUSTSTORE_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ $mcp.trustStore.secretName | quote }}
+      key: {{ $mcp.trustStore.passwordKey | quote }}
+{{- end }}
+{{- with include "infinityRulesMcp.jdkJavaOptions" . }}
+- name: JDK_JAVA_OPTIONS
+  value: {{ . | quote }}
+{{- end }}
+{{- range $mcp.extraEnv }}
+- name: {{ .name | quote }}
+  {{- if not (kindIs "invalid" .value) }}
+  value: {{ toString .value | quote }}
+  {{- end }}
+  {{- with .valueFrom }}
+  valueFrom:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end -}}
+
+{{/*
+Infinity Rules MCP: fails rendering on unsafe or inconsistent values. Rule IDs match the chart design document.
+Called from the MCP Deployment, which renders only when enabled and infinityRulesMcp.enabled are true.
+*/}}
+{{- define "infinityRulesMcp.validate" -}}
+{{- $mcp := .Values.infinityRulesMcp -}}
+{{- $auth := $mcp.auth -}}
+{{- $prefix := "infinity-rules-mcp: " -}}
+{{- $hostPattern := `^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$` -}}
+
+{{- /* V1 */ -}}
+{{- if and $mcp.ingress.enabled (not $auth.enabled) -}}
+{{- fail (print $prefix "infinityRulesMcp.ingress requires infinityRulesMcp.auth.enabled; trusted-header mode must not be exposed") -}}
+{{- end -}}
+
+{{- if $auth.enabled -}}
+
+{{- /* V2 */ -}}
+{{- $image := toString .Values.docker.infinityRulesMcp.image -}}
+{{- if or (not (trim $image)) (hasPrefix "YOUR_" $image) -}}
+{{- fail (print $prefix "docker.infinityRulesMcp.image is required") -}}
+{{- end -}}
+
+{{- /* V3 */ -}}
+{{- if or (not $mcp.allowedHosts) (not (kindIs "slice" $mcp.allowedHosts)) -}}
+{{- fail (print $prefix "infinityRulesMcp.allowedHosts must list bare host names") -}}
+{{- end -}}
+{{- range $mcp.allowedHosts -}}
+{{- if not (regexMatch $hostPattern (trimPrefix "*." (toString .))) -}}
+{{- fail (print $prefix "infinityRulesMcp.allowedHosts must list bare host names") -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* V4 */ -}}
+{{- if not (regexMatch `^https://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?)(:[0-9]{1,5})?/?$` (toString $auth.publicUrl)) -}}
+{{- fail (print $prefix "infinityRulesMcp.auth.publicUrl must be an https URL without a path") -}}
+{{- end -}}
+
+{{- /* V5 */ -}}
+{{- if not (has $auth.tokenMode (list "passthrough" "exchange")) -}}
+{{- fail (print $prefix "infinityRulesMcp.auth.tokenMode must be passthrough or exchange") -}}
+{{- end -}}
+
+{{- /* V6 */ -}}
+{{- if $mcp.ingress.enabled -}}
+{{- $publicHost := include "infinityRulesMcp.publicHost" . -}}
+{{- if or (not (regexMatch $hostPattern $publicHost)) (regexMatch `^[0-9.]+$` $publicHost) -}}
+{{- fail (print $prefix "infinityRulesMcp.auth.publicUrl must use a DNS name when ingress is enabled") -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* V14: also rejects unquoted numeric IDs, which YAML turns into imprecise floating-point numbers. */ -}}
+{{- range $audiences := list $auth.passthrough.audiences $auth.exchange.internalAudiences -}}
+{{- if and $audiences (not (kindIs "slice" $audiences)) -}}
+{{- fail (print $prefix "infinityRulesMcp.auth audiences must be lists") -}}
+{{- end -}}
+{{- range $audiences -}}
+{{- if kindIs "float64" . -}}
+{{- fail (print $prefix "infinityRulesMcp.auth audiences must be quoted strings, for example \"26383066777993846573\"") -}}
+{{- end -}}
+{{- if or (kindIs "invalid" .) (not (regexMatch `^[^,\s]+$` (toString .))) -}}
+{{- fail (print $prefix "infinityRulesMcp.auth audiences must not contain commas or whitespace") -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* V12 */ -}}
+{{- $trustStore := $mcp.trustStore -}}
+{{- if or (not (has (toString $trustStore.type) (list "PKCS12" "JKS"))) (and $trustStore.passwordKey (not $trustStore.secretName)) (and $trustStore.secretName (not $trustStore.key)) -}}
+{{- fail (print $prefix "infinityRulesMcp.trustStore is invalid") -}}
+{{- end -}}
+
+{{- /* V13: names are compared as Spring maps them to properties, so pega.inbound-auth matches PEGA_INBOUND_AUTH. */ -}}
+{{- $managed := list "SERVER_PORT" "PEGA_SKILLS_PATH" "HTTP_PROXY_HOST" "HTTP_PROXY_PORT" "HTTP_PROXY_USERNAME" "HTTP_PROXY_PASSWORD" "NO_PROXY" "POD_NAMESPACE" "POD_NAME" "PEGA_INBOUND_AUTH" "PEGA_TOKEN_MODE" "MCP_PUBLIC_URL" "PEGA_ALLOWED_HOSTS" "PEGA_INFINITY_VERSION" "SERVER_MAX_HTTP_REQUEST_HEADER_SIZE" "PEGA_KNOWLEDGE_ENABLED" "MCP_TRUSTSTORE_PASSWORD" "JDK_JAVA_OPTIONS" "PEGA_TOKEN_AUDIENCES" "PEGA_EXCHANGE_ISSUER" "PEGA_EXCHANGE_JWKS_URI" "PEGA_EXCHANGE_DISCOVERY" "PEGA_EXCHANGE_AUDIENCE" "PEGA_EXCHANGE_ALGS" "PEGA_EXCHANGE_CLIENT_ID" "PEGA_EXCHANGE_CLIENT_AUTH_METHOD" "PEGA_EXCHANGE_CLIENT_SECRET" "PEGA_EXCHANGE_INTERNAL_AUDIENCES" "PEGA_BASE_URL" "PEGA_ALLOW_INSECURE_HTTP" "PEGA_HTTP_TRUST_ALL_TLS" "SPRING_PROFILES_ACTIVE" "JAVA_TOOL_OPTIONS" "SPRING_APPLICATION_JSON" -}}
+{{- if and $mcp.extraEnv (not (kindIs "slice" $mcp.extraEnv)) -}}
+{{- fail (print $prefix "infinityRulesMcp.extraEnv must be a list of name and value entries") -}}
+{{- end -}}
+{{- range $mcp.extraEnv -}}
+{{- if not (and (kindIs "map" .) .name) -}}
+{{- fail (print $prefix "infinityRulesMcp.extraEnv must be a list of name and value entries") -}}
+{{- end -}}
+{{- if has (toString .name | upper | replace "." "_" | replace "-" "_") $managed -}}
+{{- fail (printf "%sinfinityRulesMcp.extraEnv %s is managed by the chart" $prefix .name) -}}
+{{- end -}}
+{{- end -}}
+
+{{- if eq $auth.tokenMode "exchange" -}}
+{{- $exchange := $auth.exchange -}}
+
+{{- /* V7 */ -}}
+{{- $issuer := toString $exchange.issuer -}}
+{{- if or (not (regexMatch `^https://[^/?#@\s]+(/[^?#\s]*)?$` $issuer)) (not (urlParse $issuer).hostname) -}}
+{{- fail (print $prefix "infinityRulesMcp.auth.exchange.issuer must be an https URL") -}}
+{{- end -}}
+
+{{- /* V8 */ -}}
+{{- if kindIs "float64" $exchange.clientId -}}
+{{- fail (print $prefix "infinityRulesMcp.auth.exchange.clientId must be a quoted string") -}}
+{{- end -}}
+{{- if or (kindIs "invalid" $exchange.clientId) (not (trim (toString $exchange.clientId))) -}}
+{{- fail (print $prefix "infinityRulesMcp.auth.exchange.clientId is required") -}}
+{{- end -}}
+
+{{- /* V9 */ -}}
+{{- with $exchange.jwksUri -}}
+{{- if or (not (regexMatch `^https://[^/?#@\s]+([/?][^#\s]*)?$` (toString .))) (not (urlParse (toString .)).hostname) -}}
+{{- fail (print $prefix "infinityRulesMcp.auth.exchange.jwksUri must be an https URL") -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* V10 */ -}}
+{{- if or (not $exchange.algorithms) (not (kindIs "slice" $exchange.algorithms)) -}}
+{{- fail (print $prefix "infinityRulesMcp.auth.exchange.algorithms is invalid") -}}
+{{- end -}}
+{{- range $exchange.algorithms -}}
+{{- if not (regexMatch `^(RS|PS|ES)(256|384|512)$` (toString .)) -}}
+{{- fail (print $prefix "infinityRulesMcp.auth.exchange.algorithms is invalid") -}}
+{{- end -}}
+{{- end -}}
+{{- if not (has $exchange.clientAuthMethod (list "client_secret_post" "client_secret_basic")) -}}
+{{- fail (print $prefix "infinityRulesMcp.auth.exchange.clientAuthMethod is invalid") -}}
+{{- end -}}
+{{- if and $exchange.clientSecret.name (not $exchange.clientSecret.key) -}}
+{{- fail (print $prefix "infinityRulesMcp.auth.exchange.clientSecret.key is invalid") -}}
+{{- end -}}
+
+{{- /* V11: MCP refuses to start with these; tokens for them can be obtained by any Pega user. */ -}}
+{{- $publicClients := list "34233104330833666523" -}}
+{{- range $mcp.extraEnv -}}
+{{- if and (eq (toString .name) "PEGA_OAUTH_CLIENT_ID") .value -}}
+{{- $publicClients = append $publicClients (toString .value) -}}
+{{- end -}}
+{{- end -}}
+{{- range $exchange.internalAudiences -}}
+{{- $id := trimPrefix "urn:" (toString .) -}}
+{{- if has $id $publicClients -}}
+{{- fail (printf "%sinfinityRulesMcp.auth.exchange.internalAudiences must not contain %s" $prefix $id) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- end -}}
+{{- end -}}

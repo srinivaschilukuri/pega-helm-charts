@@ -1,0 +1,119 @@
+# Rendered from the master chart with autopilot.enabled=true and autopilot.infinityRulesMcp.enabled=true.
+# Trusted-header mode must keep rendering these resources unchanged.
+---
+# Source: backingservices/charts/autopilot/templates/infinity-rules-mcp-deployment.yaml
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: infinity-rules-mcp-service
+  labels:
+    app: infinity-rules-mcp-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: infinity-rules-mcp-service
+  template:
+    metadata:
+      labels:
+        app: infinity-rules-mcp-service
+    spec:
+      imagePullSecrets:
+      - name: autopilot-registry-secret
+      securityContext:
+
+        fsGroup: 1001
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+      - name: infinity-rules-mcp
+        image: YOUR_INFINITY_RULES_MCP_IMAGE:TAG
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8090
+        resources:
+
+          limits:
+            cpu: "1"
+            memory: 1Gi
+          requests:
+            cpu: 500m
+            memory: 768Mi
+        securityContext:
+
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false
+          runAsGroup: 1001
+          runAsNonRoot: true
+          runAsUser: 1001
+          seccompProfile:
+            type: RuntimeDefault
+        volumeMounts:
+        - name: mcp-logs
+          mountPath: /opt/mcp/logs
+        env:
+        - name: SERVER_PORT
+          value: "8090"
+        - name: PEGA_SKILLS_PATH
+          value: "/opt/infinity-skills"
+        - name: PEGA_WRITE_ENABLED
+          value: "true"
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        livenessProbe:
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+          periodSeconds: 15
+          failureThreshold: 3
+          tcpSocket:
+            port: 8090
+        readinessProbe:
+          initialDelaySeconds: 20
+          timeoutSeconds: 5
+          periodSeconds: 10
+          failureThreshold: 3
+          tcpSocket:
+            port: 8090
+      volumes:
+      - name: mcp-logs
+        emptyDir: {}
+
+---
+# Source: backingservices/charts/autopilot/templates/infinity-rules-mcp-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: infinity-rules-mcp-service
+  labels:
+    app: infinity-rules-mcp-service
+spec:
+  selector:
+    app: infinity-rules-mcp-service
+  ports:
+  - name: http
+    protocol: TCP
+    port: 80
+    targetPort: 8090
+  type: ClusterIP
+
+---
+# Source: backingservices/charts/autopilot/templates/infinity-rules-mcp-poddisruptionbudget.yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: infinity-rules-mcp-service
+  namespace: default
+spec:
+  minAvailable: 50%
+  selector:
+    matchLabels:
+      app: infinity-rules-mcp-service
+

@@ -1,5 +1,8 @@
 {{- if and .Values.enabled .Values.infinityRulesMcp.enabled }}
+{{- include "infinityRulesMcp.validate" . }}
 {{- $depName := "infinity-rules-mcp-service" }}
+{{- $bearer := .Values.infinityRulesMcp.auth.enabled }}
+{{- $trustStore := and $bearer .Values.infinityRulesMcp.trustStore.secretName }}
 kind: Deployment
 apiVersion: apps/v1
 metadata:
@@ -18,9 +21,9 @@ spec:
     spec:
       imagePullSecrets:
       - name: {{ include "backingservicesRegistrySecret" ( dict "root" .Values "defaultname" "autopilot" ) }}
-       {{- range .Values.docker.imagePullSecretNames }}
-       - name: {{ . }}
-       {{- end }}
+      {{- range .Values.docker.imagePullSecretNames }}
+      - name: {{ . }}
+      {{- end }}
       {{- if .Values.infinityRulesMcp.podSecurityContext }}
       securityContext:
         {{ toYaml .Values.infinityRulesMcp.podSecurityContext | nindent 8 }}
@@ -42,13 +45,20 @@ spec:
         volumeMounts:
         - name: mcp-logs
           mountPath: /opt/mcp/logs
+        {{- if $trustStore }}
+        - name: mcp-truststore
+          mountPath: /opt/mcp/truststore
+          readOnly: true
+        {{- end }}
         env:
         - name: SERVER_PORT
           value: {{ .Values.infinityRulesMcp.service.targetPort | quote }}
         - name: PEGA_SKILLS_PATH
           value: "/opt/infinity-skills"
+        {{- if not $bearer }}
         - name: PEGA_WRITE_ENABLED
           value: "true"
+        {{- end }}
         {{- with .Values.infinityRulesMcp.proxy }}
         {{- if .httpProxyHost }}
         - name: HTTP_PROXY_HOST
@@ -79,21 +89,44 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
+        {{- if $bearer }}
+        {{- include "infinityRulesMcp.bearerEnv" . | nindent 8 }}
+        {{- end }}
         livenessProbe:
           initialDelaySeconds: {{ .Values.infinityRulesMcp.livenessProbe.initialDelaySeconds }}
           timeoutSeconds: {{ .Values.infinityRulesMcp.livenessProbe.timeoutSeconds }}
           periodSeconds: {{ .Values.infinityRulesMcp.livenessProbe.periodSeconds }}
           failureThreshold: {{ .Values.infinityRulesMcp.livenessProbe.failureThreshold }}
+          {{- if $bearer }}
+          httpGet:
+            path: /actuator/health/liveness
+            port: {{ .Values.infinityRulesMcp.service.targetPort }}
+          {{- else }}
           tcpSocket:
             port: {{ .Values.infinityRulesMcp.service.targetPort }}
+          {{- end }}
         readinessProbe:
           initialDelaySeconds: {{ .Values.infinityRulesMcp.readinessProbe.initialDelaySeconds }}
           timeoutSeconds: {{ .Values.infinityRulesMcp.readinessProbe.timeoutSeconds }}
           periodSeconds: {{ .Values.infinityRulesMcp.readinessProbe.periodSeconds }}
           failureThreshold: {{ .Values.infinityRulesMcp.readinessProbe.failureThreshold }}
+          {{- if $bearer }}
+          httpGet:
+            path: /actuator/health/readiness
+            port: {{ .Values.infinityRulesMcp.service.targetPort }}
+          {{- else }}
           tcpSocket:
             port: {{ .Values.infinityRulesMcp.service.targetPort }}
+          {{- end }}
       volumes:
       - name: mcp-logs
         emptyDir: {}
+      {{- if $trustStore }}
+      - name: mcp-truststore
+        secret:
+          secretName: {{ .Values.infinityRulesMcp.trustStore.secretName }}
+          items:
+          - key: {{ .Values.infinityRulesMcp.trustStore.key }}
+            path: {{ .Values.infinityRulesMcp.trustStore.key }}
+      {{- end }}
 {{ end }}

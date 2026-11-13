@@ -40,7 +40,7 @@ The `values.yaml` file defines the deployment, networking, authentication, provi
 | `docker.imagePullSecretNames` | Specify an array of existing image pull Secrets to use when pulling images. |
 | `docker.autopilot.image` | Specify the Autopilot Service image and tag. |
 | `docker.autopilot.imagePullPolicy` | Specify the Autopilot Service image pull policy. Default: `IfNotPresent` |
-| `docker.infinityRulesMcp.image` | Specify the Infinity Rules MCP Service image and tag. Required when `infinityRulesMcp.enabled` is `true`. |
+| `docker.infinityRulesMcp.image` | Specify the Infinity Rules MCP Service image and tag. Required when `infinityRulesMcp.enabled` is `true`. Bearer mode requires MCP 0.7.17 or later. |
 | `docker.infinityRulesMcp.imagePullPolicy` | Specify the Infinity Rules MCP Service image pull policy. Default: `IfNotPresent` |
 | `replicas` | Specify the number of Autopilot pods. Default: `2` |
 | `resources` | Define CPU and memory requests and limits for the Autopilot container. |
@@ -64,6 +64,7 @@ The `values.yaml` file defines the deployment, networking, authentication, provi
 | `infinityRulesMcp.service.targetPort` | Specify the Infinity Rules MCP container port. Default: `8090` |
 | `infinityRulesMcp.service.serviceType` | Specify the Infinity Rules MCP Kubernetes Service type. Default: `ClusterIP` |
 | `infinityRulesMcp.resources` | Define CPU and memory requests and limits for the Infinity Rules MCP container. |
+| `infinityRulesMcp.auth`, `infinityRulesMcp.allowedHosts`, `infinityRulesMcp.ingress`, `infinityRulesMcp.trustStore` | Configure bearer authentication and external access for the Infinity Rules MCP Service. See [Infinity Rules MCP Service](#infinity-rules-mcp-service). |
 | `autopilot.proxy.httpProxy` | Optional `HTTP_PROXY` value for the Autopilot container. |
 | `autopilot.proxy.httpsProxy` | Optional `HTTPS_PROXY` value for the Autopilot container. |
 | `autopilot.proxy.noProxy` | Optional comma-separated `NO_PROXY` value for the Autopilot container. |
@@ -163,9 +164,7 @@ autopilot:
 
 ## Infinity Rules MCP Service
 
-The chart can optionally deploy the Infinity Rules MCP Service in the same namespace as the Autopilot Service. When the service is enabled, Autopilot communicates with it through the internal Kubernetes service endpoint `http://infinity-rules-mcp-service/mcp`.
-
-The Autopilot pod is always configured with `VCS_INFINITY_RULES_MCP_URL=http://infinity-rules-mcp-service/mcp`. If `infinityRulesMcp.enabled` is `false`, the MCP Deployment, Service, and PodDisruptionBudget are not rendered. If you enable the MCP service later, the existing Autopilot URL configuration already points to the service name.
+The chart can optionally deploy the Infinity Rules MCP Service (`infinity-rules-mcp-service`) in the same namespace as the Autopilot Service. Autopilot calls it at `vcs.infinityRulesMcpUrl`, which defaults to the internal endpoint `http://infinity-rules-mcp-service/mcp`. If `infinityRulesMcp.enabled` is `false`, the MCP Deployment, Service, PodDisruptionBudget, and Ingress are not rendered. MCP is rendered only when the Autopilot Service is also enabled (`enabled: true`).
 
 ```yaml
 autopilot:
@@ -173,12 +172,271 @@ autopilot:
 
   docker:
     infinityRulesMcp:
-      image: "YOUR_REGISTRY_URL/infinity-rules-mcp:YOUR_TAG"
+      image: "YOUR_REGISTRY_URL/infinity-rules-skills-mcp:YOUR_TAG"
       imagePullPolicy: IfNotPresent
 
   infinityRulesMcp:
     enabled: true
 ```
+
+### Authentication modes
+
+`infinityRulesMcp.auth.enabled` selects how MCP authenticates its callers:
+
+| `auth.enabled` | Behavior |
+|---|---|
+| `false` (default) | **Trusted-header mode (deprecated).** MCP does not authenticate callers and does not verify the TLS certificates of Pega. The MCP resources render exactly as in earlier chart releases, so upgrading the chart does not restart MCP. |
+| `true` | **Bearer mode.** Every caller, including Autopilot, sends `Authorization: Bearer <token>`. MCP validates the token before it calls Pega, always verifies TLS, and accepts only Pega hosts on `allowedHosts`. External AI and MCP clients, such as VS Code, can use the same deployment through an optional Ingress. |
+
+> **Warning:** Do not expose trusted-header mode outside the cluster. The chart rejects `infinityRulesMcp.ingress.enabled: true` in this mode. Do not set `infinityRulesMcp.service.serviceType` to `NodePort` or `LoadBalancer` unless bearer mode is enabled.
+
+In bearer mode, each installation selects one token mode with `auth.tokenMode`:
+
+| Token mode | External clients present | MCP calls Pega with |
+|---|---|---|
+| `passthrough` (default) | A Pega access token | The same token |
+| `exchange` | An identity provider (IdP) token issued for MCP | A Pega token that MCP obtains with the JWT bearer grant. MCP caches it in memory for at most 30 minutes and never returns it to the client. |
+
+Autopilot sends its own Pega access token in both token modes. Its OAuth client, `26383066777993846573`, is in the default `auth.passthrough.audiences` and `auth.exchange.internalAudiences` lists, so keep it in whichever list you override.
+
+### Bearer mode prerequisites
+
+| Component | Requirement |
+|---|---|
+| MCP image | `infinity-rules-skills-mcp` with **infinity-rules-mcp 0.7.17 or later**. Bearer authentication and the health endpoints need 0.7.13, exchange-mode internal audiences need 0.7.14, and the context-path headers that Autopilot sends need 0.7.17. |
+| Autopilot | An Autopilot Service release that sends `Authorization: Bearer <access token>` and a bare-origin `X-Pega-Host` header to MCP. Earlier releases send only `X-Pega-Authorization`, which bearer mode rejects with `401`. |
+| Pega: Autopilot client | The OAuth 2.0 client `26383066777993846573`, which Autopilot uses for its JWT assertion token exchange, allows only that grant. Only Autopilot, which holds the signing key, can then obtain tokens for it. |
+| Pega: OAuth endpoints | OIDC discovery, JWKS, and token endpoints are reachable from the MCP pods over HTTPS. Pega tokens carry `iss = urn:<pega-host>` and are signed with RS256. |
+| Pega: TLS | The Pega certificate chain is trusted by a standard JVM, or you configure `infinityRulesMcp.trustStore`. Trusted-header mode does not verify TLS, so this can be a new requirement. |
+
+Every caller sends `X-Pega-Host` as a bare HTTPS origin, such as `https://pega.example.com`, on every request. Hosts that use `http://` or include a path such as `/prweb` are rejected. Callers can select an application with `X-Pega-App-Alias`.
+
+Additional prerequisites depend on the token mode:
+
+| | `passthrough` | `exchange` |
+|---|---|---|
+| Identity provider | None | An application that represents MCP, whose tokens carry the MCP audience, and a client registration for each supported MCP client with its redirect URIs. Issuer discovery (or the pinned `jwksUri`) must be reachable from the MCP pods over HTTPS. |
+| Pega client for external users | A public OAuth 2.0 client registration with the authorization code grant, PKCE, the redirect URIs of each MCP client, and a least-privilege access group. Add its client ID to `auth.passthrough.audiences`. | An OAuth 2.0 client registration with the JWT bearer grant (`urn:ietf:params:oauth:grant-type:jwt-bearer`) that trusts the IdP and maps an assertion claim to a Pega operator. It can be confidential, with its secret in a Kubernetes Secret, or public. Set its client ID in `auth.exchange.clientId`. |
+| Autopilot token accepted through | `auth.passthrough.audiences` | `auth.exchange.internalAudiences` |
+| Users sign in at | Pega, which can delegate to corporate single sign-on | The IdP |
+| MCP client configuration | MCP URL, `X-Pega-Host`, Pega client ID | MCP URL, `X-Pega-Host`, IdP client ID |
+| Additional MCP egress | None | IdP discovery and JWKS endpoints |
+
+### Infinity Rules MCP settings
+
+All settings are under `infinityRulesMcp`. Except for `ingress.enabled`, the settings below take effect only when `auth.enabled` is `true`.
+
+| Configuration | Usage |
+|---|---|
+| `auth.enabled` | Set to `true` to enable bearer mode. Default: `false` |
+| `auth.publicUrl` | Required. External HTTPS URL of MCP, host root only, for example `https://mcp.example.com`. MCP uses it in its OAuth metadata and `401` challenges, and the Ingress uses its host name. |
+| `auth.tokenMode` | `passthrough` or `exchange`. Default: `passthrough` |
+| `auth.passthrough.audiences` | Pega OAuth client IDs whose tokens are accepted, in addition to the built-in default client of MCP. Default: `["26383066777993846573"]` (Autopilot) |
+| `auth.exchange.issuer` | Required in exchange mode. IdP issuer, exactly as it appears in tokens. |
+| `auth.exchange.jwksUri` | Optional pinned HTTPS JWKS URL. Setting it disables issuer discovery. |
+| `auth.exchange.audience` | Expected token audience. Default: `<publicUrl>/mcp` |
+| `auth.exchange.algorithms` | Accepted signing algorithms (`RS`, `PS`, or `ES` with `256`, `384`, or `512`). Default: `["RS256"]` |
+| `auth.exchange.clientId` | Required in exchange mode. Pega OAuth client registration that allows the JWT bearer grant. |
+| `auth.exchange.clientAuthMethod` | `client_secret_post` or `client_secret_basic`. Default: `client_secret_post` |
+| `auth.exchange.clientSecret.name`, `auth.exchange.clientSecret.key` | Existing Secret and key that hold the client secret of the exchange client. Leave `name` empty for a public client registration. Default key: `client-secret` |
+| `auth.exchange.internalAudiences` | Pega client IDs whose Pega-issued tokens are still accepted in exchange mode. Never list a client that users can obtain tokens for. Default: `["26383066777993846573"]` (Autopilot) |
+| `allowedHosts` | Required. Pega host names that callers can target with `X-Pega-Host`: exact names such as `pega.example.com` or wildcards such as `*.example.com`, with no scheme, port, or path. |
+| `infinityVersion` | Default skills version when a request has no `X-Pega-Infinity-Version` header, for example `26-1`. |
+| `ingress.enabled` | Set to `true` to publish MCP for external clients. Allowed only in bearer mode. Default: `false` |
+| `ingress.ingressClassName` | Ingress class name. |
+| `ingress.annotations` | Annotations for the Ingress, such as controller timeouts and rate limits. |
+| `ingress.tls.secretName` | Secret with the TLS certificate for the `auth.publicUrl` host. |
+| `trustStore.secretName`, `trustStore.key` | Existing Secret and key that hold a trust store for Pega or IdP hosts signed by a private certificate authority. Default key: `truststore.p12` |
+| `trustStore.type` | `PKCS12` or `JKS`. Default: `PKCS12` |
+| `trustStore.passwordKey` | Optional key in the same Secret that holds the trust store password. |
+| `knowledge.enabled` | Set to `true` to enable the tell-me documentation tool, which sends questions to a Pega-hosted knowledge service. Default: `false` |
+| `extraEnv` | Additional non-sensitive environment variables, as `name` and `value` entries. Variables that the chart manages, such as authentication, host policy, and TLS settings, are rejected. |
+
+Quote OAuth client IDs in values files. YAML reads an unquoted `26383066777993846573` as an imprecise floating-point number, and the chart rejects it.
+
+The chart fails to render, with a message that starts with `infinity-rules-mcp:`, when bearer-mode values are missing, unsafe, or inconsistent.
+
+### Example: passthrough mode
+
+```yaml
+autopilot:
+  docker:
+    infinityRulesMcp:
+      image: "registry.example.com/platformservices/infinity-rules-skills-mcp@sha256:<digest>"
+  infinityRulesMcp:
+    enabled: true
+    auth:
+      enabled: true
+      publicUrl: "https://mcp.example.com"
+      passthrough:
+        audiences:
+          - "26383066777993846573"
+          - "<ai-client-id>"
+    allowedHosts:
+      - "pega.example.com"
+    ingress:
+      enabled: true
+      ingressClassName: "nginx"
+      tls:
+        secretName: "mcp-tls"
+```
+
+In Pega, create the public OAuth 2.0 client registration for AI clients (authorization code with PKCE, the redirect URIs of each MCP client, and a least-privilege access group), and add its client ID in place of `<ai-client-id>`.
+
+### Example: exchange mode with Microsoft Entra ID
+
+```yaml
+autopilot:
+  docker:
+    infinityRulesMcp:
+      image: "registry.example.com/platformservices/infinity-rules-skills-mcp@sha256:<digest>"
+  infinityRulesMcp:
+    enabled: true
+    auth:
+      enabled: true
+      publicUrl: "https://mcp.example.com"
+      tokenMode: exchange
+      exchange:
+        issuer: "https://login.microsoftonline.com/<tenant-id>/v2.0"
+        audience: "<mcp-application-client-id>"
+        clientId: "<pega-jwt-bearer-client-id>"
+        clientSecret:
+          name: "mcp-exchange-client"
+          key: "client-secret"
+        internalAudiences:
+          - "26383066777993846573"
+    allowedHosts:
+      - "pega.example.com"
+    ingress:
+      enabled: true
+      ingressClassName: "nginx"
+      tls:
+        secretName: "mcp-tls"
+```
+
+1. In Microsoft Entra ID, register an application for MCP. Under **Expose an API**, set an Application ID URI and add a scope for MCP clients. In the application manifest, set `requestedAccessTokenVersion` (`accessTokenAcceptedVersion` in older manifests) to `2`, so that tokens use the `v2.0` issuer above. Version 2 access tokens carry the MCP application's client ID as their audience, so set `auth.exchange.audience` to that client ID.
+2. Register each MCP client as a public client with its redirect URIs, and grant it the MCP scope.
+3. In Pega, create an OAuth 2.0 client registration that allows the JWT bearer grant, trusts the Entra ID issuer and its keys, and maps a token claim, such as `preferred_username`, to a Pega operator. Set its client ID in `auth.exchange.clientId`.
+4. For a confidential registration, store its secret in the namespace of the release:
+
+   ```sh
+   kubectl create secret generic mcp-exchange-client \
+     --from-literal=client-secret='<pega-client-secret>' -n <namespace>
+   ```
+
+### Ingress for external MCP clients
+
+When `auth.enabled` and `ingress.enabled` are both `true`, the chart renders an Ingress named `infinity-rules-mcp-service` for the `auth.publicUrl` host with two paths: `/mcp` (`Exact`) and `/.well-known/oauth-protected-resource` (`Prefix`). The health endpoints under `/actuator` are never routed. The Ingress includes a TLS section when `ingress.tls.secretName` is set; `auth.publicUrl` must use a DNS name.
+
+The chart cannot set the following controller settings portably. Configure them with `ingress.annotations` or your gateway:
+
+- a read timeout of at least 300 seconds for long-running tool calls;
+- no automatic retries of `POST /mcp`, because retries can repeat write operations;
+- request-size limits;
+- rate limiting. MCP has no per-caller limits, and Autopilot and external clients share the same pods.
+
+For example, with the NGINX Ingress Controller:
+
+```yaml
+autopilot:
+  infinityRulesMcp:
+    ingress:
+      annotations:
+        nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+        nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+        nginx.ingress.kubernetes.io/proxy-next-upstream: "off"
+        nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+        nginx.ingress.kubernetes.io/limit-rps: "10"
+```
+
+### Configuring MCP clients
+
+Configure each client with the MCP URL `<publicUrl>/mcp` and an `X-Pega-Host` header. For example, in VS Code `mcp.json`:
+
+```json
+{
+  "servers": {
+    "infinity-rules": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": {
+        "X-Pega-Host": "https://pega.example.com",
+        "X-Pega-App-Alias": "<application-alias>"
+      }
+    }
+  }
+}
+```
+
+An unauthenticated request receives `401` with a `WWW-Authenticate` header that points to the OAuth protected resource metadata of MCP. The metadata names the authorization server: the Pega host in passthrough mode, or `auth.exchange.issuer` in exchange mode. When the client asks for an OAuth client ID, enter the Pega client ID in passthrough mode or the IdP client ID in exchange mode. Clients that cannot send a custom `X-Pega-Host` header are not supported.
+
+> **Note:** MCP exposes write tools. Pega authorizes every call as the signed-in or mapped operator, so give AI-client users least-privilege access groups.
+
+### Private certificate authority
+
+The trust store replaces the default JVM trust store. When MCP must also reach publicly signed hosts, such as a cloud IdP, build the trust store from the JDK `cacerts` file plus your CA:
+
+```sh
+keytool -importkeystore -srckeystore "$JAVA_HOME/lib/security/cacerts" -srcstorepass changeit \
+  -destkeystore truststore.p12 -deststoretype PKCS12 -deststorepass '<password>'
+keytool -importcert -noprompt -alias pega-ca -file pega-ca.pem \
+  -keystore truststore.p12 -storetype PKCS12 -storepass '<password>'
+kubectl create secret generic mcp-truststore --from-file=truststore.p12 \
+  --from-literal=password='<password>' -n <namespace>
+```
+
+```yaml
+autopilot:
+  infinityRulesMcp:
+    trustStore:
+      secretName: "mcp-truststore"
+      key: "truststore.p12"
+      type: PKCS12
+      passwordKey: "password"
+```
+
+The chart mounts the Secret key read-only at `/opt/mcp/truststore` and passes the location, type, and password to the JVM through `JDK_JAVA_OPTIONS`. The password must not contain whitespace. The JVM prints `JDK_JAVA_OPTIONS` to the container log at startup, so the password appears in the log; a trust store holds only public certificates, so use a password that is not used anywhere else.
+
+### Enabling bearer mode
+
+1. **Upgrade the chart.** With `auth.enabled: false`, the MCP resources render identically, so MCP pods do not restart.
+2. **Upgrade Autopilot** to a release that sends bearer tokens to MCP. It continues to work with trusted-header MCP.
+3. **Check before switching:**
+   - Autopilot debug logs (`MCP-HEADERS`, with credential values redacted) show `Authorization` on MCP calls, and no requests lack an operator. A request without an operator cannot obtain a token and fails in bearer mode.
+   - The `X-Pega-Host` values that Autopilot sends are bare `https://` origins on the planned `allowedHosts`.
+   - The Pega certificate is trusted by a standard JVM, or a trust store Secret is ready.
+   - In exchange mode, the Autopilot client is in `auth.exchange.internalAudiences`, and the exchange client and its Secret exist.
+4. **Enable bearer mode** in one `helm upgrade`: set `auth.enabled: true`, `auth.publicUrl`, the token-mode settings, `allowedHosts` and, if needed, `trustStore`, and keep `ingress.enabled: false`. The Deployment rolls one pod at a time. Upgraded Autopilot releases send both credential headers, so old and new pods both serve Autopilot during the rollout.
+5. **Verify** an Autopilot turn that calls a rules tool. Readiness checks do not call Pega, so this is the functional check.
+6. **Onboard external clients.** In passthrough mode, register the AI client in Pega and add its client ID to `auth.passthrough.audiences`. In exchange mode, register MCP and its clients in the IdP, configure the Pega JWT bearer client, and confirm the operator mapping. Then set `ingress.enabled: true`.
+
+To **roll back**, set `ingress.enabled: false` and `auth.enabled: false` in one `helm upgrade`, or use `helm rollback`. MCP returns to trusted-header mode. Do not roll Autopilot back to a release that does not send bearer tokens while `auth.enabled` is `true`.
+
+To **change the token mode** later, run one `helm upgrade`. Every external client must sign in again with the new authorization server. Autopilot is unaffected because its client is in the default list for both modes.
+
+### Operations
+
+- **Exchange client secret rotation:** MCP reads the secret at startup. Update the Secret, then restart the Deployment with `kubectl rollout restart deployment/infinity-rules-mcp-service -n <namespace>`.
+- **IdP key rotation:** handled by issuer discovery. A pinned `jwksUri` must keep serving the current keys.
+- **Adding a Pega host:** add it to `allowedHosts` and upgrade; the pods restart. In exchange mode, the new host also needs the JWT bearer client registration.
+- **Network:** in exchange mode, egress controls and any proxy must allow the IdP as well as Pega.
+- **In-cluster traffic:** Autopilot sends bearer tokens to MCP over cluster HTTP, as it sends trusted headers today. Restrict access with a service mesh or NetworkPolicy.
+- **Exchange tuning:** `PEGA_EXCHANGE_CACHE_TTL` (default `30m`) and `PEGA_EXCHANGE_FAILURE_TTL` (default `60s`) can be set with `extraEnv`. In passthrough mode, the built-in default OAuth client of MCP is also accepted; to replace it with your AI-client registration, set `PEGA_OAUTH_CLIENT_ID` with `extraEnv`.
+
+### Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| `helm install` or `helm upgrade` fails with `infinity-rules-mcp: ...` | A missing or invalid value. The message names the setting. |
+| MCP pods never become ready after you enable bearer mode | The MCP image is too old (images before 0.7.13 do not serve `/actuator/health`), or MCP stopped at startup because of a configuration error. Check the pod log. |
+| Autopilot tool calls fail with `401` | Autopilot does not send `Authorization: Bearer`, the request has no operator, or the Autopilot client is missing from `auth.passthrough.audiences` (passthrough) or `auth.exchange.internalAudiences` (exchange). |
+| `400 missing_pega_host` | The caller did not send `X-Pega-Host`. |
+| `403 pega_host_rejected` | The `X-Pega-Host` value is not a bare `https://` origin on `allowedHosts`. |
+| `401 invalid_token` | The token audience, issuer, or signature does not match: for example, a Pega client that is not in `auth.passthrough.audiences`, a token from another Pega host, or an IdP token with the wrong audience. |
+| `401` with "The Pega instance rejected the token exchange" | The Pega JWT bearer client or operator mapping rejected the IdP token. MCP retries after 60 seconds. |
+| `503 idp_trust_unavailable` or `503 pega_trust_unavailable` | MCP cannot retrieve signing keys from the IdP or the Pega host. Check egress, the proxy settings, and TLS trust. |
+| TLS errors such as `PKIX path building failed` in the MCP log | The Pega or IdP certificate is not trusted. Configure `trustStore`. |
+| External clients time out or see interrupted responses | The ingress read timeout is too short. |
 
 ## Provider credentials
 

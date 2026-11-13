@@ -20,6 +20,7 @@ docker:
     image: YOUR_AUTOPILOT_SERVICE_IMAGE:TAG
     imagePullPolicy: IfNotPresent
   infinityRulesMcp:
+    # infinity-rules-skills-mcp image. Bearer mode (infinityRulesMcp.auth.enabled) requires MCP 0.7.17 or later.
     image: YOUR_INFINITY_RULES_MCP_IMAGE:TAG
     imagePullPolicy: IfNotPresent
 
@@ -173,6 +174,79 @@ infinityRulesMcp:
     timeoutSeconds: 5
     periodSeconds: 10
     failureThreshold: 3
+
+  # Inbound authentication. See "Infinity Rules MCP Service" in README.md.
+  auth:
+    # false: trusted-header mode, unchanged from earlier releases and deprecated. MCP does not
+    #        authenticate callers; use it only until Autopilot sends bearer tokens. Ingress is
+    #        not allowed in this mode.
+    # true:  bearer-only mode for Autopilot and external MCP clients. Every setting below takes
+    #        effect only in this mode. Requires an Infinity Rules MCP image with MCP 0.7.17 or later.
+    enabled: false
+    # Required. External HTTPS URL of MCP, host root only, for example https://mcp.example.com.
+    publicUrl: ""
+    # passthrough: external clients present Pega access tokens.
+    # exchange:    external clients present identity-provider tokens that MCP exchanges for Pega tokens.
+    tokenMode: passthrough
+    passthrough:
+      # Pega OAuth client IDs whose tokens are accepted, in addition to MCP's built-in default client.
+      # Keep Autopilot's client; add the AI-client registration. Quote each ID.
+      audiences:
+        - "26383066777993846573"
+    exchange:
+      # Required: identity-provider issuer, exactly as in its tokens.
+      issuer: ""
+      # Optional pinned https JWKS URL; disables issuer discovery.
+      jwksUri: ""
+      # Expected token audience; empty means <publicUrl>/mcp.
+      audience: ""
+      algorithms:
+        - RS256
+      # Required: Pega OAuth client registration that allows the JWT bearer grant.
+      clientId: ""
+      # client_secret_post or client_secret_basic
+      clientAuthMethod: client_secret_post
+      # Existing Secret holding the client secret; an empty name means a public registration.
+      clientSecret:
+        name: ""
+        key: client-secret
+      # Pega client IDs whose Pega-issued tokens are still accepted. Keep Autopilot's client.
+      # Never list a client that users can obtain tokens for.
+      internalAudiences:
+        - "26383066777993846573"
+
+  # Required in bearer mode. Pega host names callers may target with X-Pega-Host: exact names or
+  # "*.domain"; no scheme, port or path.
+  allowedHosts: []
+  # Default skills version when a request has no X-Pega-Infinity-Version header, for example "26-1".
+  infinityVersion: ""
+
+  # Ingress for external MCP clients. Allowed only when auth.enabled is true.
+  ingress:
+    enabled: false
+    ingressClassName: ""
+    annotations: {}
+    tls:
+      # Certificate for the auth.publicUrl host.
+      secretName: ""
+
+  # Trust store for Pega or identity-provider hosts signed by a private CA. It replaces the JVM default,
+  # so build it from the JDK cacerts plus your CA when MCP must also reach publicly signed hosts.
+  trustStore:
+    secretName: ""
+    key: truststore.p12
+    # PKCS12 or JKS
+    type: PKCS12
+    # Optional key in the same Secret that holds the trust store password.
+    passwordKey: ""
+
+  knowledge:
+    # The tell-me documentation tool sends questions to a Pega-hosted knowledge service.
+    enabled: false
+
+  # Additional non-sensitive environment variables, rendered in bearer mode only.
+  # Variables managed by the chart are rejected.
+  extraEnv: []
 
 # -------------------------------------------------------------------
 # Custom models file
