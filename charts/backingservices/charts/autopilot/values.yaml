@@ -184,7 +184,7 @@ infinityRulesMcp:
     #        effect only in this mode. Requires an Infinity Rules MCP image with MCP 0.7.17 or later.
     enabled: false
     # Required. External HTTPS URL of MCP, host root only, for example https://mcp.example.com.
-    publicUrl: ""
+    mcpBaseUrl: ""
     # passthrough: external clients present Pega access tokens.
     # exchange:    external clients present identity-provider tokens that MCP exchanges for Pega tokens.
     tokenMode: passthrough
@@ -198,7 +198,7 @@ infinityRulesMcp:
       issuer: ""
       # Optional pinned https JWKS URL; disables issuer discovery.
       jwksUri: ""
-      # Expected token audience; empty means <publicUrl>/mcp.
+      # Expected token audience; empty means <mcpBaseUrl>/mcp.
       audience: ""
       algorithms:
         - RS256
@@ -218,16 +218,13 @@ infinityRulesMcp:
   # Required in bearer mode. Pega host names callers may target with X-Pega-Host: exact names or
   # "*.domain"; no scheme, port or path.
   allowedHosts: []
-  # Default skills version when a request has no X-Pega-Infinity-Version header, for example "26-1".
-  infinityVersion: ""
-
   # Ingress for external MCP clients. Allowed only when auth.enabled is true.
   ingress:
     enabled: false
     ingressClassName: ""
     annotations: {}
     tls:
-      # Certificate for the auth.publicUrl host.
+      # Certificate for the auth.mcpBaseUrl host.
       secretName: ""
 
   # Trust store for Pega or identity-provider hosts signed by a private CA. It replaces the JVM default,
@@ -239,10 +236,6 @@ infinityRulesMcp:
     type: PKCS12
     # Optional key in the same Secret that holds the trust store password.
     passwordKey: ""
-
-  knowledge:
-    # The tell-me documentation tool sends questions to a Pega-hosted knowledge service.
-    enabled: false
 
   # Additional non-sensitive environment variables, rendered in bearer mode only.
   # Variables managed by the chart are rejected.

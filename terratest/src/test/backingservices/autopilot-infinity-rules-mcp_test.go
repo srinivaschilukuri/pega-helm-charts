@@ -38,10 +38,10 @@ func mcpValues(options map[string]string) map[string]string {
 
 func mcpBearerValues(options map[string]string) map[string]string {
 	values := mcpValues(map[string]string{
-		"autopilot.docker.infinityRulesMcp.image":   "registry.example.com/infinity-rules-skills-mcp:0.7.17",
-		"autopilot.infinityRulesMcp.auth.enabled":   "true",
-		"autopilot.infinityRulesMcp.auth.publicUrl": "https://mcp.example.com",
-		"autopilot.infinityRulesMcp.allowedHosts":   "{pega.example.com,*.pega.example.net}",
+		"autopilot.docker.infinityRulesMcp.image":    "registry.example.com/infinity-rules-skills-mcp:0.7.17",
+		"autopilot.infinityRulesMcp.auth.enabled":    "true",
+		"autopilot.infinityRulesMcp.auth.mcpBaseUrl": "https://mcp.example.com",
+		"autopilot.infinityRulesMcp.allowedHosts":    "{pega.example.com,*.pega.example.net}",
 	})
 	for key, value := range options {
 		values[key] = value
@@ -168,7 +168,6 @@ func mcpCommonBearerEnv() []corev1.EnvVar {
 		envValue("MCP_PUBLIC_URL", "https://mcp.example.com"),
 		envValue("PEGA_ALLOWED_HOSTS", "pega.example.com,*.pega.example.net"),
 		envValue("SERVER_MAX_HTTP_REQUEST_HEADER_SIZE", "16KB"),
-		envValue("PEGA_KNOWLEDGE_ENABLED", "false"),
 	}
 }
 
@@ -193,11 +192,10 @@ func TestInfinityRulesMcpTrustedHeaderModeMatchesMasterFixture(t *testing.T) {
 		"defaults": mcpValues(nil),
 		"bearer settings without auth.enabled": mcpValues(map[string]string{
 			"autopilot.infinityRulesMcp.auth.enabled":           "false",
-			"autopilot.infinityRulesMcp.auth.publicUrl":         "https://mcp.example.com",
+			"autopilot.infinityRulesMcp.auth.mcpBaseUrl":        "https://mcp.example.com",
 			"autopilot.infinityRulesMcp.auth.tokenMode":         "exchange",
 			"autopilot.infinityRulesMcp.allowedHosts":           "{pega.example.com}",
 			"autopilot.infinityRulesMcp.infinityVersion":        "26-1",
-			"autopilot.infinityRulesMcp.knowledge.enabled":      "true",
 			"autopilot.infinityRulesMcp.trustStore.secretName":  "truststore",
 			"autopilot.infinityRulesMcp.trustStore.passwordKey": "password",
 			"autopilot.infinityRulesMcp.extraEnv[0].name":       "EXTRA",
@@ -243,7 +241,7 @@ func TestInfinityRulesMcpPassthroughEnvironment(t *testing.T) {
 	t.Parallel()
 	container := mcpContainer(t, mcpBearerValues(map[string]string{
 		"autopilot.infinityRulesMcp.auth.passthrough.audiences": "{" + autopilotClientID + ",ai-client-id}",
-		"autopilot.infinityRulesMcp.auth.publicUrl":             "https://mcp.example.com/",
+		"autopilot.infinityRulesMcp.auth.mcpBaseUrl":            "https://mcp.example.com/",
 	}))
 
 	expected := append(mcpCommonBearerEnv(), envValue("PEGA_TOKEN_AUDIENCES", autopilotClientID+",ai-client-id"))
@@ -321,14 +319,16 @@ func TestInfinityRulesMcpBearerNeverRendersUnsafeVariables(t *testing.T) {
 func TestInfinityRulesMcpBearerOptionalEnvironment(t *testing.T) {
 	t.Parallel()
 	container := mcpContainer(t, mcpBearerValues(map[string]string{
-		"autopilot.infinityRulesMcp.infinityVersion":            "26-1",
-		"autopilot.infinityRulesMcp.knowledge.enabled":          "true",
 		"autopilot.infinityRulesMcp.proxy.httpProxyHost":        "proxy.example.com",
 		"autopilot.infinityRulesMcp.proxy.httpProxyPort":        "3128",
 		"autopilot.infinityRulesMcp.extraEnv[0].name":           "PEGA_EXCHANGE_CACHE_TTL",
 		"autopilot.infinityRulesMcp.extraEnv[0].value":          "10m",
 		"autopilot.infinityRulesMcp.extraEnv[1].name":           "PEGA_OAUTH_CLIENT_ID",
 		"autopilot.infinityRulesMcp.extraEnv[1].value":          "12345",
+		"autopilot.infinityRulesMcp.extraEnv[2].name":           "PEGA_KNOWLEDGE_ENABLED",
+		"autopilot.infinityRulesMcp.extraEnv[2].value":          "true",
+		"autopilot.infinityRulesMcp.extraEnv[3].name":           "PEGA_INFINITY_VERSION",
+		"autopilot.infinityRulesMcp.extraEnv[3].value":          "26-1",
 		"autopilot.infinityRulesMcp.auth.passthrough.audiences": "{" + autopilotClientID + "}",
 	}))
 
@@ -343,13 +343,37 @@ func TestInfinityRulesMcpBearerOptionalEnvironment(t *testing.T) {
 		envValue("PEGA_TOKEN_MODE", "passthrough"),
 		envValue("MCP_PUBLIC_URL", "https://mcp.example.com"),
 		envValue("PEGA_ALLOWED_HOSTS", "pega.example.com,*.pega.example.net"),
-		envValue("PEGA_INFINITY_VERSION", "26-1"),
 		envValue("SERVER_MAX_HTTP_REQUEST_HEADER_SIZE", "16KB"),
-		envValue("PEGA_KNOWLEDGE_ENABLED", "true"),
 		envValue("PEGA_TOKEN_AUDIENCES", autopilotClientID),
 		envValue("PEGA_EXCHANGE_CACHE_TTL", "10m"),
 		envValue("PEGA_OAUTH_CLIENT_ID", "12345"),
+		envValue("PEGA_KNOWLEDGE_ENABLED", "true"),
+		envValue("PEGA_INFINITY_VERSION", "26-1"),
 	}, container.Env)
+}
+
+func TestInfinityRulesMcpInfinityVersionUsesServiceDefault(t *testing.T) {
+	t.Parallel()
+	options := map[string]string{"autopilot.infinityRulesMcp.infinityVersion": "26-1"}
+	for _, values := range []map[string]string{mcpBearerValues(options), mcpExchangeValues(options)} {
+		require.NotContains(t, envNames(mcpContainer(t, values)), "PEGA_INFINITY_VERSION")
+	}
+}
+
+func TestInfinityRulesMcpKnowledgeUsesServiceDefault(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{"true", "false"} {
+		container := mcpContainer(t, mcpBearerValues(map[string]string{
+			"autopilot.infinityRulesMcp.knowledge.enabled": value,
+		}))
+		require.NotContains(t, envNames(container), "PEGA_KNOWLEDGE_ENABLED")
+	}
+
+	container := mcpContainer(t, mcpBearerValues(map[string]string{
+		"autopilot.infinityRulesMcp.extraEnv[0].name":  "PEGA_KNOWLEDGE_ENABLED",
+		"autopilot.infinityRulesMcp.extraEnv[0].value": "false",
+	}))
+	require.Contains(t, container.Env, envValue("PEGA_KNOWLEDGE_ENABLED", "false"))
 }
 
 // --- Probes and identity -------------------------------------------------------------------------
@@ -413,7 +437,7 @@ func TestInfinityRulesMcpBearerKeepsResourceIdentity(t *testing.T) {
 func TestInfinityRulesMcpIngress(t *testing.T) {
 	t.Parallel()
 	ingress := mcpIngress(t, mcpBearerValues(map[string]string{
-		"autopilot.infinityRulesMcp.auth.publicUrl":                        "https://MCP.Example.com:8443/",
+		"autopilot.infinityRulesMcp.auth.mcpBaseUrl":                       "https://MCP.Example.com:8443/",
 		"autopilot.infinityRulesMcp.ingress.enabled":                       "true",
 		"autopilot.infinityRulesMcp.ingress.ingressClassName":              "nginx",
 		"autopilot.infinityRulesMcp.ingress.annotations.example\\.com/key": "value",
@@ -510,26 +534,28 @@ func TestInfinityRulesMcpValidation(t *testing.T) {
 			"infinityRulesMcp.allowedHosts must list bare host names"},
 		{"V3 bare wildcard", mcpBearerValues(map[string]string{"autopilot.infinityRulesMcp.allowedHosts": "{*}"}),
 			"infinityRulesMcp.allowedHosts must list bare host names"},
-		{"V4 empty", mcpBearerValues(map[string]string{"autopilot.infinityRulesMcp.auth.publicUrl": ""}),
-			"infinityRulesMcp.auth.publicUrl must be an https URL without a path"},
-		{"V4 http", mcpBearerValues(map[string]string{"autopilot.infinityRulesMcp.auth.publicUrl": "http://mcp.example.com"}),
-			"infinityRulesMcp.auth.publicUrl must be an https URL without a path"},
-		{"V4 path", mcpBearerValues(map[string]string{"autopilot.infinityRulesMcp.auth.publicUrl": "https://mcp.example.com/mcp"}),
-			"infinityRulesMcp.auth.publicUrl must be an https URL without a path"},
-		{"V4 credentials", mcpBearerValues(map[string]string{"autopilot.infinityRulesMcp.auth.publicUrl": "https://user@mcp.example.com"}),
-			"infinityRulesMcp.auth.publicUrl must be an https URL without a path"},
-		{"V4 query", mcpBearerValues(map[string]string{"autopilot.infinityRulesMcp.auth.publicUrl": "https://mcp.example.com?a=b"}),
-			"infinityRulesMcp.auth.publicUrl must be an https URL without a path"},
+		{"V4 empty", mcpBearerValues(map[string]string{"autopilot.infinityRulesMcp.auth.mcpBaseUrl": ""}),
+			"infinityRulesMcp.auth.mcpBaseUrl must be an https URL without a path"},
+		{"V4 old name", without(mcpBearerValues(map[string]string{"autopilot.infinityRulesMcp.auth.publicUrl": "https://mcp.example.com"}), "autopilot.infinityRulesMcp.auth.mcpBaseUrl"),
+			"infinityRulesMcp.auth.mcpBaseUrl must be an https URL without a path"},
+		{"V4 http", mcpBearerValues(map[string]string{"autopilot.infinityRulesMcp.auth.mcpBaseUrl": "http://mcp.example.com"}),
+			"infinityRulesMcp.auth.mcpBaseUrl must be an https URL without a path"},
+		{"V4 path", mcpBearerValues(map[string]string{"autopilot.infinityRulesMcp.auth.mcpBaseUrl": "https://mcp.example.com/mcp"}),
+			"infinityRulesMcp.auth.mcpBaseUrl must be an https URL without a path"},
+		{"V4 credentials", mcpBearerValues(map[string]string{"autopilot.infinityRulesMcp.auth.mcpBaseUrl": "https://user@mcp.example.com"}),
+			"infinityRulesMcp.auth.mcpBaseUrl must be an https URL without a path"},
+		{"V4 query", mcpBearerValues(map[string]string{"autopilot.infinityRulesMcp.auth.mcpBaseUrl": "https://mcp.example.com?a=b"}),
+			"infinityRulesMcp.auth.mcpBaseUrl must be an https URL without a path"},
 		{"V5", mcpBearerValues(map[string]string{"autopilot.infinityRulesMcp.auth.tokenMode": "both"}),
 			"infinityRulesMcp.auth.tokenMode must be passthrough or exchange"},
 		{"V6 IPv4", mcpBearerValues(map[string]string{
-			"autopilot.infinityRulesMcp.auth.publicUrl":  "https://10.0.0.1",
+			"autopilot.infinityRulesMcp.auth.mcpBaseUrl": "https://10.0.0.1",
 			"autopilot.infinityRulesMcp.ingress.enabled": "true",
-		}), "infinityRulesMcp.auth.publicUrl must use a DNS name when ingress is enabled"},
+		}), "infinityRulesMcp.auth.mcpBaseUrl must use a DNS name when ingress is enabled"},
 		{"V6 IPv6", mcpBearerValues(map[string]string{
-			"autopilot.infinityRulesMcp.auth.publicUrl":  "https://[fd00::1]",
+			"autopilot.infinityRulesMcp.auth.mcpBaseUrl": "https://[fd00::1]",
 			"autopilot.infinityRulesMcp.ingress.enabled": "true",
-		}), "infinityRulesMcp.auth.publicUrl must use a DNS name when ingress is enabled"},
+		}), "infinityRulesMcp.auth.mcpBaseUrl must use a DNS name when ingress is enabled"},
 		{"V7 empty", mcpExchangeValues(map[string]string{"autopilot.infinityRulesMcp.auth.exchange.issuer": ""}),
 			"infinityRulesMcp.auth.exchange.issuer must be an https URL"},
 		{"V7 http", mcpExchangeValues(map[string]string{"autopilot.infinityRulesMcp.auth.exchange.issuer": "http://login.example.com"}),
@@ -624,9 +650,9 @@ func TestInfinityRulesMcpValidationAcceptsValidBearerValues(t *testing.T) {
 	for _, values := range []map[string]string{
 		mcpBearerValues(map[string]string{
 			"autopilot.infinityRulesMcp.ingress.enabled": "true",
-			"autopilot.infinityRulesMcp.auth.publicUrl":  "https://mcp.example.com:8443/",
+			"autopilot.infinityRulesMcp.auth.mcpBaseUrl": "https://mcp.example.com:8443/",
 		}),
-		mcpBearerValues(map[string]string{"autopilot.infinityRulesMcp.auth.publicUrl": "https://10.0.0.1"}),
+		mcpBearerValues(map[string]string{"autopilot.infinityRulesMcp.auth.mcpBaseUrl": "https://10.0.0.1"}),
 		mcpExchangeValues(map[string]string{
 			"autopilot.infinityRulesMcp.auth.exchange.jwksUri":           "https://login.example.com/keys?appid=1",
 			"autopilot.infinityRulesMcp.auth.exchange.internalAudiences": "{" + autopilotClientID + ",urn:other-client}",

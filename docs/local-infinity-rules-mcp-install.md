@@ -53,7 +53,7 @@ Add the bearer settings to the same command and run it again:
 
 ```sh
   --set autopilot.infinityRulesMcp.auth.enabled=true \
-  --set-string autopilot.infinityRulesMcp.auth.publicUrl=https://mcp.localhost \
+  --set-string autopilot.infinityRulesMcp.auth.mcpBaseUrl=https://mcp.localhost \
   --set-string 'autopilot.infinityRulesMcp.allowedHosts[0]=pega.example.com'
 ```
 

@@ -229,28 +229,28 @@ All settings are under `infinityRulesMcp`. Except for `ingress.enabled`, the set
 | Configuration | Usage |
 |---|---|
 | `auth.enabled` | Set to `true` to enable bearer mode. Default: `false` |
-| `auth.publicUrl` | Required. External HTTPS URL of MCP, host root only, for example `https://mcp.example.com`. MCP uses it in its OAuth metadata and `401` challenges, and the Ingress uses its host name. |
+| `auth.mcpBaseUrl` | Required. External HTTPS URL of MCP, host root only, for example `https://mcp.example.com`. MCP uses it in its OAuth metadata and `401` challenges, and the Ingress uses its host name. |
 | `auth.tokenMode` | `passthrough` or `exchange`. Default: `passthrough` |
 | `auth.passthrough.audiences` | Pega OAuth client IDs whose tokens are accepted, in addition to the built-in default client of MCP. Default: `["26383066777993846573"]` (Autopilot) |
 | `auth.exchange.issuer` | Required in exchange mode. IdP issuer, exactly as it appears in tokens. |
 | `auth.exchange.jwksUri` | Optional pinned HTTPS JWKS URL. Setting it disables issuer discovery. |
-| `auth.exchange.audience` | Expected token audience. Default: `<publicUrl>/mcp` |
+| `auth.exchange.audience` | Expected token audience. Default: `<mcpBaseUrl>/mcp` |
 | `auth.exchange.algorithms` | Accepted signing algorithms (`RS`, `PS`, or `ES` with `256`, `384`, or `512`). Default: `["RS256"]` |
 | `auth.exchange.clientId` | Required in exchange mode. Pega OAuth client registration that allows the JWT bearer grant. |
 | `auth.exchange.clientAuthMethod` | `client_secret_post` or `client_secret_basic`. Default: `client_secret_post` |
 | `auth.exchange.clientSecret.name`, `auth.exchange.clientSecret.key` | Existing Secret and key that hold the client secret of the exchange client. Leave `name` empty for a public client registration. Default key: `client-secret` |
 | `auth.exchange.internalAudiences` | Pega client IDs whose Pega-issued tokens are still accepted in exchange mode. Never list a client that users can obtain tokens for. Default: `["26383066777993846573"]` (Autopilot) |
 | `allowedHosts` | Required. Pega host names that callers can target with `X-Pega-Host`: exact names such as `pega.example.com` or wildcards such as `*.example.com`, with no scheme, port, or path. |
-| `infinityVersion` | Default skills version when a request has no `X-Pega-Infinity-Version` header, for example `26-1`. |
 | `ingress.enabled` | Set to `true` to publish MCP for external clients. Allowed only in bearer mode. Default: `false` |
 | `ingress.ingressClassName` | Ingress class name. |
 | `ingress.annotations` | Annotations for the Ingress, such as controller timeouts and rate limits. |
-| `ingress.tls.secretName` | Secret with the TLS certificate for the `auth.publicUrl` host. |
+| `ingress.tls.secretName` | Secret with the TLS certificate for the `auth.mcpBaseUrl` host. |
 | `trustStore.secretName`, `trustStore.key` | Existing Secret and key that hold a trust store for Pega or IdP hosts signed by a private certificate authority. Default key: `truststore.p12` |
 | `trustStore.type` | `PKCS12` or `JKS`. Default: `PKCS12` |
 | `trustStore.passwordKey` | Optional key in the same Secret that holds the trust store password. |
-| `knowledge.enabled` | Set to `true` to enable the tell-me documentation tool, which sends questions to a Pega-hosted knowledge service. Default: `false` |
 | `extraEnv` | Additional non-sensitive environment variables, as `name` and `value` entries. Variables that the chart manages, such as authentication, host policy, and TLS settings, are rejected. |
+
+When upgrading, rename `auth.publicUrl` to `auth.mcpBaseUrl`. The removed `knowledge.enabled` and `infinityVersion` values have no effect, and the MCP image's defaults now apply. To preserve previous settings, use `extraEnv` to set `PEGA_KNOWLEDGE_ENABLED` to `"true"` or `"false"` and `PEGA_INFINITY_VERSION` to the desired default skills version. The tell-me documentation tool, when enabled, sends questions to a Pega-hosted knowledge service.
 
 Quote OAuth client IDs in values files. YAML reads an unquoted `26383066777993846573` as an imprecise floating-point number, and the chart rejects it.
 
@@ -267,7 +267,7 @@ autopilot:
     enabled: true
     auth:
       enabled: true
-      publicUrl: "https://mcp.example.com"
+      mcpBaseUrl: "https://mcp.example.com"
       passthrough:
         audiences:
           - "26383066777993846573"
@@ -294,7 +294,7 @@ autopilot:
     enabled: true
     auth:
       enabled: true
-      publicUrl: "https://mcp.example.com"
+      mcpBaseUrl: "https://mcp.example.com"
       tokenMode: exchange
       exchange:
         issuer: "https://login.microsoftonline.com/<tenant-id>/v2.0"
@@ -326,7 +326,7 @@ autopilot:
 
 ### Ingress for external MCP clients
 
-When `auth.enabled` and `ingress.enabled` are both `true`, the chart renders an Ingress named `infinity-rules-mcp-service` for the `auth.publicUrl` host with two paths: `/mcp` (`Exact`) and `/.well-known/oauth-protected-resource` (`Prefix`). The health endpoints under `/actuator` are never routed. The Ingress includes a TLS section when `ingress.tls.secretName` is set; `auth.publicUrl` must use a DNS name.
+When `auth.enabled` and `ingress.enabled` are both `true`, the chart renders an Ingress named `infinity-rules-mcp-service` for the `auth.mcpBaseUrl` host with two paths: `/mcp` (`Exact`) and `/.well-known/oauth-protected-resource` (`Prefix`). The health endpoints under `/actuator` are never routed. The Ingress includes a TLS section when `ingress.tls.secretName` is set; `auth.mcpBaseUrl` must use a DNS name.
 
 The chart cannot set the following controller settings portably. Configure them with `ingress.annotations` or your gateway:
 
@@ -351,7 +351,7 @@ autopilot:
 
 ### Configuring MCP clients
 
-Configure each client with the MCP URL `<publicUrl>/mcp` and an `X-Pega-Host` header. For example, in VS Code `mcp.json`:
+Configure each client with the MCP URL `<mcpBaseUrl>/mcp` and an `X-Pega-Host` header. For example, in VS Code `mcp.json`:
 
 ```json
 {
@@ -406,7 +406,7 @@ The chart mounts the Secret key read-only at `/opt/mcp/truststore` and passes th
    - The `X-Pega-Host` values that Autopilot sends are bare `https://` origins on the planned `allowedHosts`.
    - The Pega certificate is trusted by a standard JVM, or a trust store Secret is ready.
    - In exchange mode, the Autopilot client is in `auth.exchange.internalAudiences`, and the exchange client and its Secret exist.
-4. **Enable bearer mode** in one `helm upgrade`: set `auth.enabled: true`, `auth.publicUrl`, the token-mode settings, `allowedHosts` and, if needed, `trustStore`, and keep `ingress.enabled: false`. The Deployment rolls one pod at a time. Upgraded Autopilot releases send both credential headers, so old and new pods both serve Autopilot during the rollout.
+4. **Enable bearer mode** in one `helm upgrade`: set `auth.enabled: true`, `auth.mcpBaseUrl`, the token-mode settings, `allowedHosts` and, if needed, `trustStore`, and keep `ingress.enabled: false`. The Deployment rolls one pod at a time. Upgraded Autopilot releases send both credential headers, so old and new pods both serve Autopilot during the rollout.
 5. **Verify** an Autopilot turn that calls a rules tool. Readiness checks do not call Pega, so this is the functional check.
 6. **Onboard external clients.** In passthrough mode, register the AI client in Pega and add its client ID to `auth.passthrough.audiences`. In exchange mode, register MCP and its clients in the IdP, configure the Pega JWT bearer client, and confirm the operator mapping. Then set `ingress.enabled: true`.
 

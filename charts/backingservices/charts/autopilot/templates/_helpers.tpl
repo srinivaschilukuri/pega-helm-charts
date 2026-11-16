@@ -162,10 +162,10 @@ Usage: {{ include "autopilot.creatorEnvSuffix" "openrouter" }}
 {{- end -}}
 
 {{/*
-Infinity Rules MCP: host name of infinityRulesMcp.auth.publicUrl, used for the Ingress rule and TLS host.
+Infinity Rules MCP: host name of infinityRulesMcp.auth.mcpBaseUrl, used for the Ingress rule and TLS host.
 */}}
 {{- define "infinityRulesMcp.publicHost" -}}
-{{- (urlParse (toString .Values.infinityRulesMcp.auth.publicUrl)).hostname | lower -}}
+{{- (urlParse (toString .Values.infinityRulesMcp.auth.mcpBaseUrl)).hostname | lower -}}
 {{- end -}}
 
 {{/*
@@ -195,17 +195,11 @@ variables shared with trusted-header mode. Only the active token mode's variable
 - name: PEGA_TOKEN_MODE
   value: {{ $auth.tokenMode | quote }}
 - name: MCP_PUBLIC_URL
-  value: {{ trimSuffix "/" (toString $auth.publicUrl) | quote }}
+  value: {{ trimSuffix "/" (toString $auth.mcpBaseUrl) | quote }}
 - name: PEGA_ALLOWED_HOSTS
   value: {{ join "," $mcp.allowedHosts | quote }}
-{{- with $mcp.infinityVersion }}
-- name: PEGA_INFINITY_VERSION
-  value: {{ toString . | quote }}
-{{- end }}
 - name: SERVER_MAX_HTTP_REQUEST_HEADER_SIZE
   value: "16KB"
-- name: PEGA_KNOWLEDGE_ENABLED
-  value: {{ eq (toString $mcp.knowledge.enabled) "true" | toString | quote }}
 {{- if eq $auth.tokenMode "exchange" }}
 {{- $exchange := $auth.exchange }}
 - name: PEGA_EXCHANGE_ISSUER
@@ -300,8 +294,8 @@ Called from the MCP Deployment, which renders only when enabled and infinityRule
 {{- end -}}
 
 {{- /* V4 */ -}}
-{{- if not (regexMatch `^https://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?)(:[0-9]{1,5})?/?$` (toString $auth.publicUrl)) -}}
-{{- fail (print $prefix "infinityRulesMcp.auth.publicUrl must be an https URL without a path") -}}
+{{- if not (regexMatch `^https://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?)(:[0-9]{1,5})?/?$` (toString $auth.mcpBaseUrl)) -}}
+{{- fail (print $prefix "infinityRulesMcp.auth.mcpBaseUrl must be an https URL without a path") -}}
 {{- end -}}
 
 {{- /* V5 */ -}}
@@ -313,7 +307,7 @@ Called from the MCP Deployment, which renders only when enabled and infinityRule
 {{- if $mcp.ingress.enabled -}}
 {{- $publicHost := include "infinityRulesMcp.publicHost" . -}}
 {{- if or (not (regexMatch $hostPattern $publicHost)) (regexMatch `^[0-9.]+$` $publicHost) -}}
-{{- fail (print $prefix "infinityRulesMcp.auth.publicUrl must use a DNS name when ingress is enabled") -}}
+{{- fail (print $prefix "infinityRulesMcp.auth.mcpBaseUrl must use a DNS name when ingress is enabled") -}}
 {{- end -}}
 {{- end -}}
 
@@ -339,7 +333,7 @@ Called from the MCP Deployment, which renders only when enabled and infinityRule
 {{- end -}}
 
 {{- /* V13: names are compared as Spring maps them to properties, so pega.inbound-auth matches PEGA_INBOUND_AUTH. */ -}}
-{{- $managed := list "SERVER_PORT" "PEGA_SKILLS_PATH" "HTTP_PROXY_HOST" "HTTP_PROXY_PORT" "HTTP_PROXY_USERNAME" "HTTP_PROXY_PASSWORD" "NO_PROXY" "POD_NAMESPACE" "POD_NAME" "PEGA_INBOUND_AUTH" "PEGA_TOKEN_MODE" "MCP_PUBLIC_URL" "PEGA_ALLOWED_HOSTS" "PEGA_INFINITY_VERSION" "SERVER_MAX_HTTP_REQUEST_HEADER_SIZE" "PEGA_KNOWLEDGE_ENABLED" "MCP_TRUSTSTORE_PASSWORD" "JDK_JAVA_OPTIONS" "PEGA_TOKEN_AUDIENCES" "PEGA_EXCHANGE_ISSUER" "PEGA_EXCHANGE_JWKS_URI" "PEGA_EXCHANGE_DISCOVERY" "PEGA_EXCHANGE_AUDIENCE" "PEGA_EXCHANGE_ALGS" "PEGA_EXCHANGE_CLIENT_ID" "PEGA_EXCHANGE_CLIENT_AUTH_METHOD" "PEGA_EXCHANGE_CLIENT_SECRET" "PEGA_EXCHANGE_INTERNAL_AUDIENCES" "PEGA_BASE_URL" "PEGA_ALLOW_INSECURE_HTTP" "PEGA_HTTP_TRUST_ALL_TLS" "SPRING_PROFILES_ACTIVE" "JAVA_TOOL_OPTIONS" "SPRING_APPLICATION_JSON" -}}
+{{- $managed := list "SERVER_PORT" "PEGA_SKILLS_PATH" "HTTP_PROXY_HOST" "HTTP_PROXY_PORT" "HTTP_PROXY_USERNAME" "HTTP_PROXY_PASSWORD" "NO_PROXY" "POD_NAMESPACE" "POD_NAME" "PEGA_INBOUND_AUTH" "PEGA_TOKEN_MODE" "MCP_PUBLIC_URL" "PEGA_ALLOWED_HOSTS" "SERVER_MAX_HTTP_REQUEST_HEADER_SIZE" "MCP_TRUSTSTORE_PASSWORD" "JDK_JAVA_OPTIONS" "PEGA_TOKEN_AUDIENCES" "PEGA_EXCHANGE_ISSUER" "PEGA_EXCHANGE_JWKS_URI" "PEGA_EXCHANGE_DISCOVERY" "PEGA_EXCHANGE_AUDIENCE" "PEGA_EXCHANGE_ALGS" "PEGA_EXCHANGE_CLIENT_ID" "PEGA_EXCHANGE_CLIENT_AUTH_METHOD" "PEGA_EXCHANGE_CLIENT_SECRET" "PEGA_EXCHANGE_INTERNAL_AUDIENCES" "PEGA_BASE_URL" "PEGA_ALLOW_INSECURE_HTTP" "PEGA_HTTP_TRUST_ALL_TLS" "SPRING_PROFILES_ACTIVE" "JAVA_TOOL_OPTIONS" "SPRING_APPLICATION_JSON" -}}
 {{- if and $mcp.extraEnv (not (kindIs "slice" $mcp.extraEnv)) -}}
 {{- fail (print $prefix "infinityRulesMcp.extraEnv must be a list of name and value entries") -}}
 {{- end -}}
