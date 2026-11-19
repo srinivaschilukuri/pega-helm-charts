@@ -189,10 +189,10 @@ infinityRulesMcp:
     # exchange:    external clients present identity-provider tokens that MCP exchanges for Pega tokens.
     tokenMode: passthrough
     passthrough:
-      # Pega OAuth client IDs whose tokens are accepted, in addition to MCP's built-in default client.
-      # Keep Autopilot's client; add the AI-client registration. Quote each ID.
-      audiences:
-        - "26383066777993846573"
+      # Additional Pega OAuth client IDs whose tokens are accepted, such as the AI-client registration.
+      # Autopilot's client and MCP's built-in default client are accepted without being listed. Quote each ID.
+      audiences: []
+    # Autopilot's Pega-issued tokens are also accepted in exchange mode; no setting is needed.
     exchange:
       # Required: identity-provider issuer, exactly as in its tokens.
       issuer: ""
@@ -210,10 +210,6 @@ infinityRulesMcp:
       clientSecret:
         name: ""
         key: client-secret
-      # Pega client IDs whose Pega-issued tokens are still accepted. Keep Autopilot's client.
-      # Never list a client that users can obtain tokens for.
-      internalAudiences:
-        - "26383066777993846573"
 
   # Required in bearer mode. Pega host names callers may target with X-Pega-Host: exact names or
   # "*.domain"; no scheme, port or path.

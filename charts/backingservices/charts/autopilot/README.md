@@ -197,7 +197,7 @@ In bearer mode, each installation selects one token mode with `auth.tokenMode`:
 | `passthrough` (default) | A Pega access token | The same token |
 | `exchange` | An identity provider (IdP) token issued for MCP | A Pega token that MCP obtains with the JWT bearer grant. MCP caches it in memory for at most 30 minutes and never returns it to the client. |
 
-Autopilot sends its own Pega access token in both token modes. Its OAuth client, `26383066777993846573`, is in the default `auth.passthrough.audiences` and `auth.exchange.internalAudiences` lists, so keep it in whichever list you override.
+Autopilot sends its own Pega access token in both token modes. The chart always accepts tokens issued to its OAuth client, `26383066777993846573`, so you do not need to list it.
 
 ### Bearer mode prerequisites
 
@@ -217,7 +217,6 @@ Additional prerequisites depend on the token mode:
 |---|---|---|
 | Identity provider | None | An application that represents MCP, whose tokens carry the MCP audience, and a client registration for each supported MCP client with its redirect URIs. Issuer discovery (or the pinned `jwksUri`) must be reachable from the MCP pods over HTTPS. |
 | Pega client for external users | A public OAuth 2.0 client registration with the authorization code grant, PKCE, the redirect URIs of each MCP client, and a least-privilege access group. Add its client ID to `auth.passthrough.audiences`. | An OAuth 2.0 client registration with the JWT bearer grant (`urn:ietf:params:oauth:grant-type:jwt-bearer`) that trusts the IdP and maps an assertion claim to a Pega operator. It can be confidential, with its secret in a Kubernetes Secret, or public. Set its client ID in `auth.exchange.clientId`. |
-| Autopilot token accepted through | `auth.passthrough.audiences` | `auth.exchange.internalAudiences` |
 | Users sign in at | Pega, which can delegate to corporate single sign-on | The IdP |
 | MCP client configuration | MCP URL, `X-Pega-Host`, Pega client ID | MCP URL, `X-Pega-Host`, IdP client ID |
 | Additional MCP egress | None | IdP discovery and JWKS endpoints |
@@ -231,7 +230,7 @@ All settings are under `infinityRulesMcp`. Except for `ingress.enabled`, the set
 | `auth.enabled` | Set to `true` to enable bearer mode. Default: `false` |
 | `auth.mcpBaseUrl` | Required. External HTTPS URL of MCP, host root only, for example `https://mcp.example.com`. MCP uses it in its OAuth metadata and `401` challenges, and the Ingress uses its host name. |
 | `auth.tokenMode` | `passthrough` or `exchange`. Default: `passthrough` |
-| `auth.passthrough.audiences` | Pega OAuth client IDs whose tokens are accepted, in addition to the built-in default client of MCP. Default: `["26383066777993846573"]` (Autopilot) |
+| `auth.passthrough.audiences` | Additional Pega OAuth client IDs whose tokens are accepted, such as the AI-client registration. Autopilot's client and the built-in default client of MCP are accepted without being listed. Default: `[]` |
 | `auth.exchange.issuer` | Required in exchange mode. IdP issuer, exactly as it appears in tokens. |
 | `auth.exchange.jwksUri` | Optional pinned HTTPS JWKS URL. Setting it disables issuer discovery. |
 | `auth.exchange.audience` | Expected token audience. Default: `<mcpBaseUrl>/mcp` |
@@ -239,7 +238,6 @@ All settings are under `infinityRulesMcp`. Except for `ingress.enabled`, the set
 | `auth.exchange.clientId` | Required in exchange mode. Pega OAuth client registration that allows the JWT bearer grant. |
 | `auth.exchange.clientAuthMethod` | `client_secret_post` or `client_secret_basic`. Default: `client_secret_post` |
 | `auth.exchange.clientSecret.name`, `auth.exchange.clientSecret.key` | Existing Secret and key that hold the client secret of the exchange client. Leave `name` empty for a public client registration. Default key: `client-secret` |
-| `auth.exchange.internalAudiences` | Pega client IDs whose Pega-issued tokens are still accepted in exchange mode. Never list a client that users can obtain tokens for. Default: `["26383066777993846573"]` (Autopilot) |
 | `allowedHosts` | Required. Pega host names that callers can target with `X-Pega-Host`: exact names such as `pega.example.com` or wildcards such as `*.example.com`, with no scheme, port, or path. |
 | `ingress.enabled` | Set to `true` to publish MCP for external clients. Allowed only in bearer mode. Default: `false` |
 | `ingress.ingressClassName` | Ingress class name. |
@@ -270,7 +268,6 @@ autopilot:
       mcpBaseUrl: "https://mcp.example.com"
       passthrough:
         audiences:
-          - "26383066777993846573"
           - "<ai-client-id>"
     allowedHosts:
       - "pega.example.com"
@@ -303,8 +300,6 @@ autopilot:
         clientSecret:
           name: "mcp-exchange-client"
           key: "client-secret"
-        internalAudiences:
-          - "26383066777993846573"
     allowedHosts:
       - "pega.example.com"
     ingress:
@@ -405,14 +400,14 @@ The chart mounts the Secret key read-only at `/opt/mcp/truststore` and passes th
    - Autopilot debug logs (`MCP-HEADERS`, with credential values redacted) show `Authorization` on MCP calls, and no requests lack an operator. A request without an operator cannot obtain a token and fails in bearer mode.
    - The `X-Pega-Host` values that Autopilot sends are bare `https://` origins on the planned `allowedHosts`.
    - The Pega certificate is trusted by a standard JVM, or a trust store Secret is ready.
-   - In exchange mode, the Autopilot client is in `auth.exchange.internalAudiences`, and the exchange client and its Secret exist.
+   - In exchange mode, the exchange client and its Secret exist.
 4. **Enable bearer mode** in one `helm upgrade`: set `auth.enabled: true`, `auth.mcpBaseUrl`, the token-mode settings, `allowedHosts` and, if needed, `trustStore`, and keep `ingress.enabled: false`. The Deployment rolls one pod at a time. Upgraded Autopilot releases send both credential headers, so old and new pods both serve Autopilot during the rollout.
 5. **Verify** an Autopilot turn that calls a rules tool. Readiness checks do not call Pega, so this is the functional check.
 6. **Onboard external clients.** In passthrough mode, register the AI client in Pega and add its client ID to `auth.passthrough.audiences`. In exchange mode, register MCP and its clients in the IdP, configure the Pega JWT bearer client, and confirm the operator mapping. Then set `ingress.enabled: true`.
 
 To **roll back**, set `ingress.enabled: false` and `auth.enabled: false` in one `helm upgrade`, or use `helm rollback`. MCP returns to trusted-header mode. Do not roll Autopilot back to a release that does not send bearer tokens while `auth.enabled` is `true`.
 
-To **change the token mode** later, run one `helm upgrade`. Every external client must sign in again with the new authorization server. Autopilot is unaffected because its client is in the default list for both modes.
+To **change the token mode** later, run one `helm upgrade`. Every external client must sign in again with the new authorization server. Autopilot is unaffected because the chart accepts its client in both modes.
 
 ### Operations
 
@@ -429,7 +424,7 @@ To **change the token mode** later, run one `helm upgrade`. Every external clien
 |---|---|
 | `helm install` or `helm upgrade` fails with `infinity-rules-mcp: ...` | A missing or invalid value. The message names the setting. |
 | MCP pods never become ready after you enable bearer mode | The MCP image is too old (images before 0.7.13 do not serve `/actuator/health`), or MCP stopped at startup because of a configuration error. Check the pod log. |
-| Autopilot tool calls fail with `401` | Autopilot does not send `Authorization: Bearer`, the request has no operator, or the Autopilot client is missing from `auth.passthrough.audiences` (passthrough) or `auth.exchange.internalAudiences` (exchange). |
+| Autopilot tool calls fail with `401` | Autopilot does not send `Authorization: Bearer`, or the request has no operator. |
 | `400 missing_pega_host` | The caller did not send `X-Pega-Host`. |
 | `403 pega_host_rejected` | The `X-Pega-Host` value is not a bare `https://` origin on `allowedHosts`. |
 | `401 invalid_token` | The token audience, issuer, or signature does not match: for example, a Pega client that is not in `auth.passthrough.audiences`, a token from another Pega host, or an IdP token with the wrong audience. |

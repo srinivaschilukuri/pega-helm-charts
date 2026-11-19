@@ -82,15 +82,6 @@ func mcpValuesFile(t *testing.T, infinityRulesMcpYAML string) string {
 	return path
 }
 
-func mcpContainerWithValuesFile(t *testing.T, values map[string]string, infinityRulesMcpYAML string) corev1.Container {
-	output, err := renderMcpE(t, values, []string{mcpValuesFile(t, infinityRulesMcpYAML)}, mcpDeploymentTemplate)
-	require.NoError(t, err)
-	var deployment appsv1.Deployment
-	helm.UnmarshalK8SYaml(t, output, &deployment)
-	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
-	return deployment.Spec.Template.Spec.Containers[0]
-}
-
 func without(values map[string]string, keys ...string) map[string]string {
 	result := map[string]string{}
 	for key, value := range values {
@@ -240,7 +231,7 @@ func TestInfinityRulesMcpDeploymentAdditionalImagePullSecrets(t *testing.T) {
 func TestInfinityRulesMcpPassthroughEnvironment(t *testing.T) {
 	t.Parallel()
 	container := mcpContainer(t, mcpBearerValues(map[string]string{
-		"autopilot.infinityRulesMcp.auth.passthrough.audiences": "{" + autopilotClientID + ",ai-client-id}",
+		"autopilot.infinityRulesMcp.auth.passthrough.audiences": "{ai-client-id}",
 		"autopilot.infinityRulesMcp.auth.mcpBaseUrl":            "https://mcp.example.com/",
 	}))
 
@@ -254,10 +245,12 @@ func TestInfinityRulesMcpPassthroughDefaultAudience(t *testing.T) {
 	require.Equal(t, append(mcpCommonBearerEnv(), envValue("PEGA_TOKEN_AUDIENCES", autopilotClientID)), container.Env)
 }
 
-func TestInfinityRulesMcpPassthroughOmitsEmptyAudiences(t *testing.T) {
+func TestInfinityRulesMcpPassthroughDeduplicatesAutopilotClient(t *testing.T) {
 	t.Parallel()
-	container := mcpContainerWithValuesFile(t, mcpBearerValues(nil), "auth:\n  passthrough:\n    audiences: []")
-	require.Equal(t, mcpCommonBearerEnv(), container.Env)
+	container := mcpContainer(t, mcpBearerValues(map[string]string{
+		"autopilot.infinityRulesMcp.auth.passthrough.audiences": "{ai-client-id," + autopilotClientID + "}",
+	}))
+	require.Contains(t, container.Env, envValue("PEGA_TOKEN_AUDIENCES", autopilotClientID+",ai-client-id"))
 }
 
 func TestInfinityRulesMcpExchangeEnvironment(t *testing.T) {
@@ -289,7 +282,7 @@ func TestInfinityRulesMcpExchangeEnvironment(t *testing.T) {
 
 func TestInfinityRulesMcpExchangeMinimalEnvironment(t *testing.T) {
 	t.Parallel()
-	container := mcpContainerWithValuesFile(t, mcpExchangeValues(nil), "auth:\n  exchange:\n    internalAudiences: []")
+	container := mcpContainer(t, mcpExchangeValues(nil))
 
 	expected := mcpCommonBearerEnv()
 	expected[5] = envValue("PEGA_TOKEN_MODE", "exchange")
@@ -298,8 +291,19 @@ func TestInfinityRulesMcpExchangeMinimalEnvironment(t *testing.T) {
 		envValue("PEGA_EXCHANGE_ALGS", "RS256"),
 		envValue("PEGA_EXCHANGE_CLIENT_ID", "pega-exchange-client"),
 		envValue("PEGA_EXCHANGE_CLIENT_AUTH_METHOD", "client_secret_post"),
+		envValue("PEGA_EXCHANGE_INTERNAL_AUDIENCES", autopilotClientID),
 	)
 	require.Equal(t, expected, container.Env)
+}
+
+func TestInfinityRulesMcpExchangeInternalAudiencesAreNotConfigurable(t *testing.T) {
+	t.Parallel()
+	container := mcpContainer(t, mcpExchangeValues(map[string]string{
+		"autopilot.infinityRulesMcp.auth.exchange.internalAudiences": "{user-client-id}",
+		"autopilot.infinityRulesMcp.auth.passthrough.audiences":      "{ai-client-id}",
+	}))
+	require.Contains(t, container.Env, envValue("PEGA_EXCHANGE_INTERNAL_AUDIENCES", autopilotClientID))
+	require.NotContains(t, envNames(container), "PEGA_TOKEN_AUDIENCES")
 }
 
 func TestInfinityRulesMcpBearerNeverRendersUnsafeVariables(t *testing.T) {
@@ -319,17 +323,16 @@ func TestInfinityRulesMcpBearerNeverRendersUnsafeVariables(t *testing.T) {
 func TestInfinityRulesMcpBearerOptionalEnvironment(t *testing.T) {
 	t.Parallel()
 	container := mcpContainer(t, mcpBearerValues(map[string]string{
-		"autopilot.infinityRulesMcp.proxy.httpProxyHost":        "proxy.example.com",
-		"autopilot.infinityRulesMcp.proxy.httpProxyPort":        "3128",
-		"autopilot.infinityRulesMcp.extraEnv[0].name":           "PEGA_EXCHANGE_CACHE_TTL",
-		"autopilot.infinityRulesMcp.extraEnv[0].value":          "10m",
-		"autopilot.infinityRulesMcp.extraEnv[1].name":           "PEGA_OAUTH_CLIENT_ID",
-		"autopilot.infinityRulesMcp.extraEnv[1].value":          "12345",
-		"autopilot.infinityRulesMcp.extraEnv[2].name":           "PEGA_KNOWLEDGE_ENABLED",
-		"autopilot.infinityRulesMcp.extraEnv[2].value":          "true",
-		"autopilot.infinityRulesMcp.extraEnv[3].name":           "PEGA_INFINITY_VERSION",
-		"autopilot.infinityRulesMcp.extraEnv[3].value":          "26-1",
-		"autopilot.infinityRulesMcp.auth.passthrough.audiences": "{" + autopilotClientID + "}",
+		"autopilot.infinityRulesMcp.proxy.httpProxyHost": "proxy.example.com",
+		"autopilot.infinityRulesMcp.proxy.httpProxyPort": "3128",
+		"autopilot.infinityRulesMcp.extraEnv[0].name":    "PEGA_EXCHANGE_CACHE_TTL",
+		"autopilot.infinityRulesMcp.extraEnv[0].value":   "10m",
+		"autopilot.infinityRulesMcp.extraEnv[1].name":    "PEGA_OAUTH_CLIENT_ID",
+		"autopilot.infinityRulesMcp.extraEnv[1].value":   "12345",
+		"autopilot.infinityRulesMcp.extraEnv[2].name":    "PEGA_KNOWLEDGE_ENABLED",
+		"autopilot.infinityRulesMcp.extraEnv[2].value":   "true",
+		"autopilot.infinityRulesMcp.extraEnv[3].name":    "PEGA_INFINITY_VERSION",
+		"autopilot.infinityRulesMcp.extraEnv[3].value":   "26-1",
 	}))
 
 	require.Equal(t, []corev1.EnvVar{
@@ -572,14 +575,6 @@ func TestInfinityRulesMcpValidation(t *testing.T) {
 			"infinityRulesMcp.auth.exchange.algorithms is invalid"},
 		{"V10 client auth", mcpExchangeValues(map[string]string{"autopilot.infinityRulesMcp.auth.exchange.clientAuthMethod": "private_key_jwt"}),
 			"infinityRulesMcp.auth.exchange.clientAuthMethod is invalid"},
-		{"V11 shipped client", mcpExchangeValues(map[string]string{
-			"autopilot.infinityRulesMcp.auth.exchange.internalAudiences": "{" + autopilotClientID + ",urn:34233104330833666523}",
-		}), "infinityRulesMcp.auth.exchange.internalAudiences must not contain 34233104330833666523"},
-		{"V11 extraEnv client", mcpExchangeValues(map[string]string{
-			"autopilot.infinityRulesMcp.auth.exchange.internalAudiences": "{" + autopilotClientID + ",ai-client-id}",
-			"autopilot.infinityRulesMcp.extraEnv[0].name":                "PEGA_OAUTH_CLIENT_ID",
-			"autopilot.infinityRulesMcp.extraEnv[0].value":               "ai-client-id",
-		}), "infinityRulesMcp.auth.exchange.internalAudiences must not contain ai-client-id"},
 		{"V12 type", mcpBearerValues(map[string]string{"autopilot.infinityRulesMcp.trustStore.type": "PEM"}),
 			"infinityRulesMcp.trustStore is invalid"},
 		{"V12 password without secret", mcpBearerValues(map[string]string{"autopilot.infinityRulesMcp.trustStore.passwordKey": "password"}),
@@ -597,11 +592,13 @@ func TestInfinityRulesMcpValidation(t *testing.T) {
 			"autopilot.infinityRulesMcp.extraEnv[0].value": "id",
 		}), "infinityRulesMcp.extraEnv PEGA_EXCHANGE_INTERNAL_AUDIENCES is managed by the chart"},
 		{"V14 whitespace", mcpBearerValues(map[string]string{"autopilot.infinityRulesMcp.auth.passthrough.audiences": "{bad id}"}),
-			"infinityRulesMcp.auth audiences must not contain commas or whitespace"},
-		{"V14 comma", mcpExchangeValues(map[string]string{"autopilot.infinityRulesMcp.auth.exchange.internalAudiences[0]": "a\\,b"}),
-			"infinityRulesMcp.auth audiences must not contain commas or whitespace"},
+			"infinityRulesMcp.auth.passthrough.audiences must not contain commas or whitespace"},
+		{"V14 comma", mcpBearerValues(map[string]string{"autopilot.infinityRulesMcp.auth.passthrough.audiences[0]": "a\\,b"}),
+			"infinityRulesMcp.auth.passthrough.audiences must not contain commas or whitespace"},
 		{"V14 empty", mcpBearerValues(map[string]string{"autopilot.infinityRulesMcp.auth.passthrough.audiences[0]": ""}),
-			"infinityRulesMcp.auth audiences must not contain commas or whitespace"},
+			"infinityRulesMcp.auth.passthrough.audiences must not contain commas or whitespace"},
+		{"V14 not a list", mcpBearerValues(map[string]string{"autopilot.infinityRulesMcp.auth.passthrough.audiences": "ai-client-id"}),
+			"infinityRulesMcp.auth.passthrough.audiences must be a list"},
 	}
 
 	for _, testCase := range cases {
@@ -626,9 +623,7 @@ func TestInfinityRulesMcpValidationWithValuesFiles(t *testing.T) {
 		{"V10 no algorithms", mcpExchangeValues(nil), "auth:\n  exchange:\n    algorithms: []",
 			"infinityRulesMcp.auth.exchange.algorithms is invalid"},
 		{"unquoted audience", mcpBearerValues(nil), "auth:\n  passthrough:\n    audiences:\n      - 26383066777993846573",
-			"infinityRulesMcp.auth audiences must be quoted strings"},
-		{"unquoted internal audience", mcpExchangeValues(nil), "auth:\n  exchange:\n    internalAudiences:\n      - 26383066777993846573",
-			"infinityRulesMcp.auth audiences must be quoted strings"},
+			"infinityRulesMcp.auth.passthrough.audiences must be quoted strings"},
 		{"unquoted client ID", without(mcpExchangeValues(nil), "autopilot.infinityRulesMcp.auth.exchange.clientId"),
 			"auth:\n  exchange:\n    clientId: 26383066777993846573",
 			"infinityRulesMcp.auth.exchange.clientId must be a quoted string"},
@@ -654,10 +649,9 @@ func TestInfinityRulesMcpValidationAcceptsValidBearerValues(t *testing.T) {
 		}),
 		mcpBearerValues(map[string]string{"autopilot.infinityRulesMcp.auth.mcpBaseUrl": "https://10.0.0.1"}),
 		mcpExchangeValues(map[string]string{
-			"autopilot.infinityRulesMcp.auth.exchange.jwksUri":           "https://login.example.com/keys?appid=1",
-			"autopilot.infinityRulesMcp.auth.exchange.internalAudiences": "{" + autopilotClientID + ",urn:other-client}",
-			"autopilot.infinityRulesMcp.extraEnv[0].name":                "PEGA_OAUTH_CLIENT_ID",
-			"autopilot.infinityRulesMcp.extraEnv[0].value":               "ai-client-id",
+			"autopilot.infinityRulesMcp.auth.exchange.jwksUri": "https://login.example.com/keys?appid=1",
+			"autopilot.infinityRulesMcp.extraEnv[0].name":      "PEGA_OAUTH_CLIENT_ID",
+			"autopilot.infinityRulesMcp.extraEnv[0].value":     "ai-client-id",
 		}),
 	} {
 		_, err := renderMcpE(t, values, nil, mcpDeploymentTemplate)

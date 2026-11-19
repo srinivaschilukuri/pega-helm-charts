@@ -190,6 +190,8 @@ variables shared with trusted-header mode. Only the active token mode's variable
 {{- define "infinityRulesMcp.bearerEnv" -}}
 {{- $mcp := .Values.infinityRulesMcp -}}
 {{- $auth := $mcp.auth -}}
+{{- /* Autopilot calls MCP with Pega tokens issued to this client, so they are accepted in both token modes. */ -}}
+{{- $autopilotClientId := "26383066777993846573" -}}
 - name: PEGA_INBOUND_AUTH
   value: "bearer"
 - name: PEGA_TOKEN_MODE
@@ -227,15 +229,11 @@ variables shared with trusted-header mode. Only the active token mode's variable
       name: {{ . | quote }}
       key: {{ $exchange.clientSecret.key | quote }}
 {{- end }}
-{{- with $exchange.internalAudiences }}
 - name: PEGA_EXCHANGE_INTERNAL_AUDIENCES
-  value: {{ join "," . | quote }}
-{{- end }}
+  value: {{ $autopilotClientId | quote }}
 {{- else }}
-{{- with $auth.passthrough.audiences }}
 - name: PEGA_TOKEN_AUDIENCES
-  value: {{ join "," . | quote }}
-{{- end }}
+  value: {{ prepend (default (list) $auth.passthrough.audiences) $autopilotClientId | uniq | join "," | quote }}
 {{- end }}
 {{- if and $mcp.trustStore.secretName $mcp.trustStore.passwordKey }}
 - name: MCP_TRUSTSTORE_PASSWORD
@@ -312,17 +310,16 @@ Called from the MCP Deployment, which renders only when enabled and infinityRule
 {{- end -}}
 
 {{- /* V14: also rejects unquoted numeric IDs, which YAML turns into imprecise floating-point numbers. */ -}}
-{{- range $audiences := list $auth.passthrough.audiences $auth.exchange.internalAudiences -}}
+{{- $audiences := $auth.passthrough.audiences -}}
 {{- if and $audiences (not (kindIs "slice" $audiences)) -}}
-{{- fail (print $prefix "infinityRulesMcp.auth audiences must be lists") -}}
+{{- fail (print $prefix "infinityRulesMcp.auth.passthrough.audiences must be a list") -}}
 {{- end -}}
 {{- range $audiences -}}
 {{- if kindIs "float64" . -}}
-{{- fail (print $prefix "infinityRulesMcp.auth audiences must be quoted strings, for example \"26383066777993846573\"") -}}
+{{- fail (print $prefix "infinityRulesMcp.auth.passthrough.audiences must be quoted strings, for example \"26383066777993846573\"") -}}
 {{- end -}}
 {{- if or (kindIs "invalid" .) (not (regexMatch `^[^,\s]+$` (toString .))) -}}
-{{- fail (print $prefix "infinityRulesMcp.auth audiences must not contain commas or whitespace") -}}
-{{- end -}}
+{{- fail (print $prefix "infinityRulesMcp.auth.passthrough.audiences must not contain commas or whitespace") -}}
 {{- end -}}
 {{- end -}}
 
@@ -384,20 +381,6 @@ Called from the MCP Deployment, which renders only when enabled and infinityRule
 {{- end -}}
 {{- if and $exchange.clientSecret.name (not $exchange.clientSecret.key) -}}
 {{- fail (print $prefix "infinityRulesMcp.auth.exchange.clientSecret.key is invalid") -}}
-{{- end -}}
-
-{{- /* V11: MCP refuses to start with these; tokens for them can be obtained by any Pega user. */ -}}
-{{- $publicClients := list "34233104330833666523" -}}
-{{- range $mcp.extraEnv -}}
-{{- if and (eq (toString .name) "PEGA_OAUTH_CLIENT_ID") .value -}}
-{{- $publicClients = append $publicClients (toString .value) -}}
-{{- end -}}
-{{- end -}}
-{{- range $exchange.internalAudiences -}}
-{{- $id := trimPrefix "urn:" (toString .) -}}
-{{- if has $id $publicClients -}}
-{{- fail (printf "%sinfinityRulesMcp.auth.exchange.internalAudiences must not contain %s" $prefix $id) -}}
-{{- end -}}
 {{- end -}}
 {{- end -}}
 
